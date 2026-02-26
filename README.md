@@ -53,7 +53,11 @@ ENCRYPTION_KEY=<fernet-key>
 Generate a Fernet key:
 
 ```bash
-python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+python3 - <<'PY'
+import base64, os
+print(base64.urlsafe_b64encode(os.urandom(32)).decode())
+PY
+
 ```
 
 Then fill the API/RPC variables you want to use (`BINANCE_*`, `ETH_RPC_URL`, `BASE_RPC_URL`, `POLYGON_RPC_URL`, `SOLANA_RPC_URL`, `OPENSEA_API_KEY`, etc.).
