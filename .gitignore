@@ -1,0 +1,31 @@
+.venv/
+**/.venv/
+.pytest_cache/
+**/.pytest_cache/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.swp
+*.swo
+
+# Secrets and local env files
+.env
+.env.*
+!.env.example
+
+# Local databases and data exports
+*.db
+*.sqlite
+*.sqlite3
+nfts_*.csv
+openseatest.py
+
+# Frontend artifacts
+node_modules/
+frontend/node_modules/
+frontend/dist/
+dist/
+
+# Build/runtime artifacts
+*.log
