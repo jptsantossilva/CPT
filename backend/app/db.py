@@ -4,7 +4,7 @@ from sqlalchemy import inspect, text
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from .config import settings
-from .models import Account, Holding, NFTBlacklist, NFTHolding, Price, Snapshot
+from .models import Account, AppSetting, Holding, NFTBlacklist, NFTHolding, Price, Snapshot
 from .wallet_chains import parse_wallet_identifier
 
 DB_URL = os.getenv("DATABASE_URL") or settings.DATABASE_URL
@@ -53,6 +53,23 @@ def get_latest_snapshot():
         q = select(Snapshot).order_by(Snapshot.timestamp.desc()).limit(1)
         res = s.exec(q).first()
         return res
+
+
+def get_app_setting(key: str) -> str | None:
+    with get_session() as s:
+        row = s.get(AppSetting, key)
+        return row.value if row else None
+
+
+def set_app_setting(key: str, value: str) -> None:
+    with get_session() as s:
+        row = s.get(AppSetting, key)
+        if row:
+            row.value = value
+            s.add(row)
+        else:
+            s.add(AppSetting(key=key, value=value))
+        s.commit()
 
 
 def list_assets():

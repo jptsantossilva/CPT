@@ -1,9 +1,11 @@
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from sqlmodel import select
 
 from . import db, services
-from .api import binance_accounts, wallets
+from .api import binance_accounts, sync_schedule, wallets
+from .models import Snapshot
 
 app = FastAPI(title="Crypto Portfolio Tracker")
 
@@ -24,6 +26,12 @@ app.add_middleware(
 @app.on_event("startup")
 def on_startup():
     db.init_db()
+    services.scheduler.start()
+
+
+@app.on_event("shutdown")
+def on_shutdown():
+    services.scheduler.stop()
 
 
 @app.get("/health")
@@ -51,6 +59,29 @@ def latest_snapshot():
     if not snap:
         raise HTTPException(status_code=404, detail="no snapshot")
     return snap
+
+
+@app.get("/snapshot/history")
+def snapshot_history(limit: int = 400):
+    n = max(1, min(int(limit or 400), 5000))
+    with db.get_session() as s:
+        rows = s.exec(select(Snapshot).order_by(Snapshot.timestamp.asc()).limit(n)).all()
+    return rows
+
+
+@app.get("/snapshot/variations")
+def snapshot_variations():
+    with db.get_session() as s:
+        rows = s.exec(select(Snapshot).order_by(Snapshot.timestamp.asc())).all()
+    return services.history.compute_variations(rows)
+
+
+@app.get("/history/portfolio")
+def portfolio_history(limit: int = 800):
+    n = max(1, min(int(limit or 800), 5000))
+    with db.get_session() as s:
+        rows = s.exec(select(Snapshot).order_by(Snapshot.timestamp.asc()).limit(n)).all()
+    return services.history.build_portfolio_history(rows)
 
 
 @app.get("/assets")
@@ -89,3 +120,4 @@ def update_nft_visibility(nft_id: int, payload: NftVisibilityUpdate):
 # admin routes
 app.include_router(binance_accounts.router)
 app.include_router(wallets.router)
+app.include_router(sync_schedule.router)

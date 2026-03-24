@@ -13,6 +13,35 @@ export type SyncStatus = {
   total_usd?: number | null
 }
 
+export type SyncSchedule = {
+  enabled: boolean
+  interval_value: number
+  interval_unit: 'minutes' | 'hours' | 'days' | 'weeks'
+  time_of_day: string
+  day_of_week: 'monday' | 'tuesday' | 'wednesday' | 'thursday' | 'friday' | 'saturday' | 'sunday'
+  next_run_at?: string | null
+}
+
+export type PortfolioHistoryPoint = {
+  timestamp: string
+  totals: {
+    coins_eur: number
+    coins_usd: number
+    nfts_eur: number
+    nfts_usd: number
+    portfolio_eur: number
+    portfolio_usd: number
+  }
+  coins: Record<string, { eur: number; usd: number }>
+  nfts: Record<string, { eur: number; usd: number }>
+}
+
+export type PortfolioHistoryResponse = {
+  points: PortfolioHistoryPoint[]
+  coin_labels: Record<string, string>
+  nft_labels: Record<string, string>
+}
+
 async function parseResponse<T>(response: Response): Promise<T> {
   const text = await response.text()
   let data: any = null
@@ -132,4 +161,16 @@ export async function syncNow() {
 
 export async function fetchSyncStatus() {
   return apiGet<SyncStatus>('/sync/status')
+}
+
+export async function fetchSyncSchedule() {
+  return apiGet<SyncSchedule>('/admin/sync-schedule/')
+}
+
+export async function updateSyncSchedule(payload: Partial<SyncSchedule>) {
+  return apiPut<SyncSchedule>('/admin/sync-schedule/', payload)
+}
+
+export async function fetchPortfolioHistory(limit = 800) {
+  return apiGet<PortfolioHistoryResponse>(`/history/portfolio?limit=${encodeURIComponent(String(limit))}`)
 }

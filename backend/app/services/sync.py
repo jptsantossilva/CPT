@@ -2,7 +2,7 @@ import json
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from threading import Lock
 
 from ..db import get_session
@@ -299,6 +299,38 @@ def _apply_nft_blacklist(
     return out
 
 
+def _persist_daily_snapshot(
+    session,
+    *,
+    total_eur: float,
+    total_usd: float,
+    holdings_count: int,
+    symbols_count: int,
+    nfts_count: int = 0,
+    meta_payload: dict | None = None,
+) -> None:
+    now_utc = datetime.utcnow()
+    day_start = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end = day_start + timedelta(days=1)
+    session.query(Snapshot).filter(Snapshot.timestamp >= day_start, Snapshot.timestamp < day_end).delete(
+        synchronize_session=False
+    )
+    meta = {
+        "holdings_count": holdings_count,
+        "symbols_count": symbols_count,
+        "nfts_count": nfts_count,
+    }
+    if meta_payload:
+        meta.update(meta_payload)
+    session.add(
+        Snapshot(
+            total_eur=total_eur,
+            total_usd=total_usd,
+            meta=json.dumps(meta),
+        )
+    )
+
+
 def sync_all() -> None:
     """Fetch holdings, prices, and persist both holdings and snapshot totals."""
     started = _utc_now_iso()
@@ -397,11 +429,63 @@ def sync_all() -> None:
 
         total_eur = 0.0
         total_usd = 0.0
+        coin_totals_by_symbol: dict[str, dict[str, float]] = {}
         for h in holdings:
             sym = h["asset"]
             p = price_map.get(sym, {"price_eur": 0, "price_usd": 0})
-            total_eur += h["qty"] * float(p.get("price_eur", 0) or 0)
-            total_usd += h["qty"] * float(p.get("price_usd", 0) or 0)
+            value_eur = h["qty"] * float(p.get("price_eur", 0) or 0)
+            value_usd = h["qty"] * float(p.get("price_usd", 0) or 0)
+            total_eur += value_eur
+            total_usd += value_usd
+            curr = coin_totals_by_symbol.get(sym) or {"eur": 0.0, "usd": 0.0}
+            curr["eur"] += value_eur
+            curr["usd"] += value_usd
+            coin_totals_by_symbol[sym] = curr
+
+        nft_totals_by_key: dict[str, dict[str, object]] = {}
+        nfts_total_eur = 0.0
+        nfts_total_usd = 0.0
+        for row in synced_nfts:
+            visibility = str(row.get("visibility") or "visible").strip().lower()
+            if visibility != "visible":
+                continue
+            chain = str(row.get("chain") or "").strip().lower()
+            contract = str(row.get("contract") or "").strip().lower()
+            token_id = str(row.get("token_id") or "").strip()
+            if not (chain and contract and token_id):
+                continue
+            key = f"{chain}:{contract}:{token_id}"
+            value_eur = float(row.get("valuation_eur") or 0.0)
+            value_usd = float(row.get("valuation_usd") or 0.0)
+            nfts_total_eur += value_eur
+            nfts_total_usd += value_usd
+            nft_totals_by_key[key] = {
+                "name": row.get("name") or key,
+                "chain": chain,
+                "contract": contract,
+                "token_id": token_id,
+                "eur": value_eur,
+                "usd": value_usd,
+            }
+
+        history_meta = {
+            "totals": {
+                "coins_eur": total_eur,
+                "coins_usd": total_usd,
+                "nfts_eur": nfts_total_eur,
+                "nfts_usd": nfts_total_usd,
+                "portfolio_eur": total_eur + nfts_total_eur,
+                "portfolio_usd": total_usd + nfts_total_usd,
+            },
+            "coins": [
+                {"key": sym, "name": sym, "eur": vals["eur"], "usd": vals["usd"]}
+                for sym, vals in sorted(coin_totals_by_symbol.items(), key=lambda kv: kv[1]["eur"], reverse=True)
+            ],
+            "nfts": [
+                {"key": key, **vals}
+                for key, vals in sorted(nft_totals_by_key.items(), key=lambda kv: float(kv[1]["eur"]), reverse=True)
+            ],
+        }
 
         _set_state(progress=92, message="Persisting snapshot and holdings...")
         with get_session() as s:
@@ -447,12 +531,16 @@ def sync_all() -> None:
                         visibility=str(row.get("visibility") or "visible"),
                     )
                 )
-            snap = Snapshot(
+            # Keep a single historical snapshot per UTC day (latest run wins).
+            _persist_daily_snapshot(
+                s,
                 total_eur=total_eur,
                 total_usd=total_usd,
-                meta=json.dumps({"holdings_count": len(holdings), "symbols_count": len(symbols)}),
+                holdings_count=len(holdings),
+                symbols_count=len(symbols),
+                nfts_count=len(synced_nfts),
+                meta_payload=history_meta,
             )
-            s.add(snap)
             s.commit()
 
         finished = _utc_now_iso()

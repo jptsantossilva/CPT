@@ -1,7 +1,17 @@
 import React from 'react'
 import SyncRoundedIcon from '@mui/icons-material/SyncRounded'
-import { Alert, Box, Button, Card, CardContent, Chip, CircularProgress, Grid, Stack, Typography } from '@mui/material'
-import { fetchAssetIcons, fetchAssets, fetchLatestSnapshot, fetchNfts, fetchSyncStatus, syncNow, type SyncStatus } from '../shared/api'
+import { Alert, Box, Button, Card, CardContent, Checkbox, Chip, CircularProgress, FormControlLabel, Grid, Stack, Typography } from '@mui/material'
+import {
+  fetchAssetIcons,
+  fetchAssets,
+  fetchLatestSnapshot,
+  fetchNfts,
+  fetchPortfolioHistory,
+  fetchSyncStatus,
+  syncNow,
+  type PortfolioHistoryResponse,
+  type SyncStatus,
+} from '../shared/api'
 import { formatEur, formatUsd } from '../shared/format'
 
 type Notice = { type: 'success' | 'error'; text: string } | null
@@ -38,6 +48,63 @@ function formatDuration(totalSeconds: number): string {
   const seconds = safe % 60
   if (minutes <= 0) return `${seconds}s`
   return `${minutes}m ${seconds}s`
+}
+
+function formatDayLabel(value: string): string {
+  const dt = new Date(value)
+  if (Number.isNaN(dt.getTime())) return ''
+  const dd = String(dt.getDate()).padStart(2, '0')
+  const mm = String(dt.getMonth() + 1).padStart(2, '0')
+  return `${dd}/${mm}`
+}
+
+function formatCompactNumber(value: number): string {
+  const abs = Math.abs(value)
+  const units = [
+    { threshold: 1_000_000_000, suffix: 'B' },
+    { threshold: 1_000_000, suffix: 'M' },
+    { threshold: 1_000, suffix: 'K' },
+  ]
+
+  for (const unit of units) {
+    if (abs >= unit.threshold) {
+      const scaled = value / unit.threshold
+      const scaledAbs = Math.abs(scaled)
+      const digits = scaledAbs >= 100 ? 0 : scaledAbs >= 10 ? 1 : 2
+      return `${scaled.toFixed(digits).replace(/\.0+$/, '').replace(/(\.\d*[1-9])0+$/, '$1')}${unit.suffix}`
+    }
+  }
+
+  const digits = abs >= 100 ? 0 : abs >= 10 ? 1 : 2
+  return value.toFixed(digits).replace(/\.0+$/, '').replace(/(\.\d*[1-9])0+$/, '$1')
+}
+
+function formatAxisCurrency(value: number, currency: 'EUR' | 'USD'): string {
+  const symbol = currency === 'EUR' ? '€' : '$'
+  return `${symbol}${formatCompactNumber(value)}`
+}
+
+function formatCurrencyWithSymbol(value: number, currency: 'EUR' | 'USD'): string {
+  return currency === 'EUR'
+    ? `€${formatEur(value, { withCode: false })}`
+    : `$${formatUsd(value, { withCode: false })}`
+}
+
+type HistoryRangeKey = '1W' | '1M' | '3M' | '6M' | '1Y' | 'ALL'
+
+function rangeToDays(range: HistoryRangeKey): number | null {
+  if (range === '1W') return 7
+  if (range === '1M') return 30
+  if (range === '3M') return 90
+  if (range === '6M') return 180
+  if (range === '1Y') return 365
+  return null
+}
+
+function colorFromKey(key: string, seed = 0): string {
+  let h = seed
+  for (let i = 0; i < key.length; i += 1) h = (h * 31 + key.charCodeAt(i)) % 360
+  return `hsl(${h}, 62%, 52%)`
 }
 
 const ICON_SYMBOL_ALIASES: Record<string, string[]> = {
@@ -96,13 +163,24 @@ function AssetIcon({ symbol, iconUrl, size = 22 }: { symbol: string; iconUrl?: s
     )
   }
 
-export default function Dashboard() {
+type CurrencyMode = 'EUR' | 'USD'
+
+export default function Dashboard({ currencyMode }: { currencyMode: CurrencyMode }) {
   const [snapshot, setSnapshot] = React.useState<any>(null)
   const [assets, setAssets] = React.useState<any[]>([])
   const [nfts, setNfts] = React.useState<any[]>([])
   const [assetIcons, setAssetIcons] = React.useState<Record<string, string>>({})
+  const [portfolioHistory, setPortfolioHistory] = React.useState<PortfolioHistoryResponse | null>(null)
+  const [historyRange, setHistoryRange] = React.useState<HistoryRangeKey>('1M')
+  const [showTotals, setShowTotals] = React.useState(true)
+  const [showCoinsLines, setShowCoinsLines] = React.useState(false)
+  const [showNftsLines, setShowNftsLines] = React.useState(false)
+  const [historyHoverIndex, setHistoryHoverIndex] = React.useState<number | null>(null)
+  const [historyHoverLineKey, setHistoryHoverLineKey] = React.useState<string | null>(null)
+  const [historyTooltipPos, setHistoryTooltipPos] = React.useState<{ x: number; y: number; alignRight: boolean; openDown: boolean } | null>(null)
   const totalEur = snapshot?.total_eur ? Number(snapshot.total_eur) : 0
   const totalUsd = snapshot?.total_usd ? Number(snapshot.total_usd) : 0
+  const totalSelected = currencyMode === 'EUR' ? totalEur : totalUsd
   const [syncLoading, setSyncLoading] = React.useState(false)
   const [syncStatus, setSyncStatus] = React.useState<SyncStatus | null>(null)
   const [notice, setNotice] = React.useState<Notice>(null)
@@ -111,12 +189,11 @@ export default function Dashboard() {
   const [hoveredClassSegment, setHoveredClassSegment] = React.useState<string | null>(null)
   const [classTooltipPos, setClassTooltipPos] = React.useState<{ x: number; y: number } | null>(null)
   const [chartsBuildProgress, setChartsBuildProgress] = React.useState(0)
-  const [animatedTotalEur, setAnimatedTotalEur] = React.useState(0)
-  const [animatedTotalUsd, setAnimatedTotalUsd] = React.useState(0)
+  const [animatedTotal, setAnimatedTotal] = React.useState(0)
   const [nowMs, setNowMs] = React.useState<number>(() => Date.now())
   const donutRef = React.useRef<HTMLDivElement | null>(null)
   const classRef = React.useRef<HTMLDivElement | null>(null)
-  const prevTotalsRef = React.useRef<{ eur: number; usd: number }>({ eur: 0, usd: 0 })
+  const prevTotalRef = React.useRef<number>(0)
   const lastSyncedAt = React.useMemo(() => {
     if (syncStatus?.finished_at) return syncStatus.finished_at
     if (snapshot?.timestamp) return snapshot.timestamp
@@ -135,11 +212,12 @@ export default function Dashboard() {
   }
 
   React.useEffect(() => {
-    Promise.all([fetchLatestSnapshot(), fetchAssets(), fetchNfts()])
-      .then(([latestSnapshot, latestAssets, latestNfts]) => {
+    Promise.all([fetchLatestSnapshot(), fetchAssets(), fetchNfts(), fetchPortfolioHistory()])
+      .then(([latestSnapshot, latestAssets, latestNfts, history]) => {
         setSnapshot(latestSnapshot)
         setAssets(latestAssets || [])
         setNfts(latestNfts || [])
+        setPortfolioHistory(history || { points: [], coin_labels: {}, nft_labels: {} })
       })
       .catch(() => {})
   }, [])
@@ -175,10 +253,16 @@ export default function Dashboard() {
         setSyncLoading(false)
         if (status.status === 'completed') {
           setNotice({ type: 'success', text: formatSyncMessage(status) })
-          const [latestSnap, latestAssets, latestNfts] = await Promise.all([fetchLatestSnapshot(), fetchAssets(), fetchNfts()])
+          const [latestSnap, latestAssets, latestNfts, history] = await Promise.all([
+            fetchLatestSnapshot(),
+            fetchAssets(),
+            fetchNfts(),
+            fetchPortfolioHistory(),
+          ])
           setSnapshot(latestSnap)
           setAssets(latestAssets)
           setNfts(latestNfts)
+          setPortfolioHistory(history || { points: [], coin_labels: {}, nft_labels: {} })
         } else if (status.status === 'failed') {
           setNotice({ type: 'error', text: status.message || 'Sync failed.' })
         }
@@ -197,11 +281,9 @@ export default function Dashboard() {
   }, [syncStatus?.status])
 
   React.useEffect(() => {
-    const fromEur = prevTotalsRef.current.eur
-    const fromUsd = prevTotalsRef.current.usd
-    const toEur = totalEur
-    const toUsd = totalUsd
-    if (fromEur === toEur && fromUsd === toUsd) return
+    const from = prevTotalRef.current
+    const to = totalSelected
+    if (from === to) return
 
     const durationMs = 620
     const start = performance.now()
@@ -210,18 +292,17 @@ export default function Dashboard() {
     const tick = (now: number) => {
       const t = Math.min(1, (now - start) / durationMs)
       const eased = 1 - Math.pow(1 - t, 3)
-      setAnimatedTotalEur(fromEur + (toEur - fromEur) * eased)
-      setAnimatedTotalUsd(fromUsd + (toUsd - fromUsd) * eased)
+      setAnimatedTotal(from + (to - from) * eased)
       if (t < 1) {
         raf = window.requestAnimationFrame(tick)
       } else {
-        prevTotalsRef.current = { eur: toEur, usd: toUsd }
+        prevTotalRef.current = to
       }
     }
 
     raf = window.requestAnimationFrame(tick)
     return () => window.cancelAnimationFrame(raf)
-  }, [totalEur, totalUsd])
+  }, [totalSelected])
 
   async function triggerSync() {
     setNotice(null)
@@ -254,11 +335,17 @@ export default function Dashboard() {
       curr.valueUsd += Number(a.value_usd || 0)
       bySymbol.set(symbol, curr)
     }
-    const rows = Array.from(bySymbol.values()).filter((r) => r.valueEur > 0).sort((a, b) => b.valueEur - a.valueEur)
+    const rows = Array.from(bySymbol.values())
+      .map((r) => {
+        const selectedValue = currencyMode === 'EUR' ? r.valueEur : r.valueUsd
+        return { ...r, selectedValue }
+      })
+      .filter((r) => r.selectedValue > 0)
+      .sort((a, b) => b.selectedValue - a.selectedValue)
     if (rows.length === 0) return []
-    const total = rows.reduce((acc, row) => acc + row.valueEur, 0)
-    return rows.map((row) => ({ ...row, pct: total > 0 ? (row.valueEur / total) * 100 : 0 }))
-  }, [assets])
+    const total = rows.reduce((acc, row) => acc + row.selectedValue, 0)
+    return rows.map((row) => ({ symbol: row.symbol, valueEur: row.valueEur, valueUsd: row.valueUsd, pct: total > 0 ? (row.selectedValue / total) * 100 : 0 }))
+  }, [assets, currencyMode])
 
   const topCount = 6
   const topRows = allocationRows.slice(0, topCount)
@@ -383,27 +470,36 @@ export default function Dashboard() {
     const coinsEur = stableEur + otherCoinsEur
     const coinsUsd = stableUsd + otherCoinsUsd
     const totalEur = coinsEur + nftsEur
+    const totalUsd = coinsUsd + nftsUsd
+    const coinsSelected = currencyMode === 'EUR' ? coinsEur : coinsUsd
+    const totalSelected = currencyMode === 'EUR' ? totalEur : totalUsd
 
     const primary = [
       { key: 'coins', label: 'Coins', valueEur: coinsEur, valueUsd: coinsUsd, color: '#2563eb' },
       { key: 'nfts', label: 'NFTs', valueEur: nftsEur, valueUsd: nftsUsd, color: '#0f766e' },
     ]
-      .filter((r) => r.valueEur > 0)
-      .map((r) => ({ ...r, pctTotal: totalEur > 0 ? (r.valueEur / totalEur) * 100 : 0 }))
+      .filter((r) => (currencyMode === 'EUR' ? r.valueEur : r.valueUsd) > 0)
+      .map((r) => {
+        const selectedValue = currencyMode === 'EUR' ? r.valueEur : r.valueUsd
+        return { ...r, pctTotal: totalSelected > 0 ? (selectedValue / totalSelected) * 100 : 0 }
+      })
 
     const childCoins = [
       { key: 'stable', label: 'Stable Coins', valueEur: stableEur, valueUsd: stableUsd, color: '#bfdbfe' },
       { key: 'other_coins', label: 'Other Coins', valueEur: otherCoinsEur, valueUsd: otherCoinsUsd, color: '#93c5fd' },
     ]
-      .filter((r) => r.valueEur > 0)
-      .map((r) => ({
-        ...r,
-        pctTotal: totalEur > 0 ? (r.valueEur / totalEur) * 100 : 0,
-        pctCoins: coinsEur > 0 ? (r.valueEur / coinsEur) * 100 : 0,
-      }))
+      .filter((r) => (currencyMode === 'EUR' ? r.valueEur : r.valueUsd) > 0)
+      .map((r) => {
+        const selectedValue = currencyMode === 'EUR' ? r.valueEur : r.valueUsd
+        return {
+          ...r,
+          pctTotal: totalSelected > 0 ? (selectedValue / totalSelected) * 100 : 0,
+          pctCoins: coinsSelected > 0 ? (selectedValue / coinsSelected) * 100 : 0,
+        }
+      })
 
-    return { primary, childCoins, totalEur }
-  }, [assets, nfts])
+    return { primary, childCoins }
+  }, [assets, nfts, currencyMode])
 
   const activeClassSegment = React.useMemo(() => {
     const all = [...classData.primary, ...classData.childCoins]
@@ -468,6 +564,204 @@ export default function Dashboard() {
     return Math.max(0, Math.floor((finishedMs - startedMs) / 1000))
   }, [finishedMs, startedMs, syncStatus?.status])
 
+  const filteredHistoryPoints = React.useMemo(() => {
+    const points = portfolioHistory?.points || []
+    if (points.length === 0) return []
+    const days = rangeToDays(historyRange)
+    if (days == null) return points
+    const latestTs = new Date(points[points.length - 1].timestamp).getTime()
+    const cutoff = latestTs - days * 24 * 60 * 60 * 1000
+    return points.filter((p) => new Date(p.timestamp).getTime() >= cutoff)
+  }, [historyRange, portfolioHistory?.points])
+
+  type ChartLine = { key: string; label: string; currency: 'EUR' | 'USD'; weight: number; color: string; values: number[] }
+  const historyLines = React.useMemo(() => {
+    const points = filteredHistoryPoints
+    if (points.length === 0) return [] as ChartLine[]
+
+    const lines: ChartLine[] = []
+    if (showTotals) {
+      const isEur = currencyMode === 'EUR'
+      lines.push({
+        key: isEur ? 'total_eur' : 'total_usd',
+        label: 'Total Portfolio',
+        currency: currencyMode,
+        weight: 3.2,
+        color: isEur ? '#7c4dff' : '#ff8a65',
+        values: points.map((p) => (isEur ? Number(p.totals?.portfolio_eur || 0) : Number(p.totals?.portfolio_usd || 0))),
+      })
+    }
+
+    if (showCoinsLines) {
+      const coinKeys = Object.keys(portfolioHistory?.coin_labels || {})
+      for (const coinKey of coinKeys) {
+        const coinLabel = portfolioHistory?.coin_labels?.[coinKey] || coinKey
+        const isEur = currencyMode === 'EUR'
+        lines.push({
+          key: `coin_${coinKey}_${isEur ? 'eur' : 'usd'}`,
+          label: coinLabel,
+          currency: currencyMode,
+          weight: 1.2,
+          color: colorFromKey(`coin-${coinKey}-${isEur ? 'eur' : 'usd'}`, isEur ? 12 : 48),
+          values: points.map((p) => Number(isEur ? p.coins?.[coinKey]?.eur || 0 : p.coins?.[coinKey]?.usd || 0)),
+        })
+      }
+    }
+
+    if (showNftsLines) {
+      const nftKeys = Object.keys(portfolioHistory?.nft_labels || {})
+      for (const nftKey of nftKeys) {
+        const nftLabel = portfolioHistory?.nft_labels?.[nftKey] || nftKey
+        const isEur = currencyMode === 'EUR'
+        lines.push({
+          key: `nft_${nftKey}_${isEur ? 'eur' : 'usd'}`,
+          label: nftLabel,
+          currency: currencyMode,
+          weight: 1.1,
+          color: colorFromKey(`nft-${nftKey}-${isEur ? 'eur' : 'usd'}`, isEur ? 85 : 130),
+          values: points.map((p) => Number(isEur ? p.nfts?.[nftKey]?.eur || 0 : p.nfts?.[nftKey]?.usd || 0)),
+        })
+      }
+    }
+    return lines
+  }, [filteredHistoryPoints, portfolioHistory?.coin_labels, portfolioHistory?.nft_labels, showCoinsLines, showNftsLines, showTotals, currencyMode])
+
+  const historyChart = React.useMemo(() => {
+    const points = filteredHistoryPoints
+    if (points.length < 2 || historyLines.length === 0) {
+      return { lines: [] as Array<ChartLine & { d: string }>, yMin: 0, yMax: 1, yTicks: [] as Array<{ y: number; label: string }> }
+    }
+
+    const width = 960
+    const height = 280
+    const padLeft = 64
+    const padRight = 20
+    const padTop = 16
+    const padBottom = 28
+    const innerW = width - padLeft - padRight
+    const innerH = height - padTop - padBottom
+
+    let yMin = Number.POSITIVE_INFINITY
+    let yMax = Number.NEGATIVE_INFINITY
+    for (const line of historyLines) {
+      for (const value of line.values) {
+        if (!Number.isFinite(value)) continue
+        if (value < yMin) yMin = value
+        if (value > yMax) yMax = value
+      }
+    }
+    if (!Number.isFinite(yMin) || !Number.isFinite(yMax)) {
+      yMin = 0
+      yMax = 1
+    }
+    if (yMax - yMin < 1e-9) {
+      yMin -= 1
+      yMax += 1
+    }
+    const span = yMax - yMin
+    yMin = Math.max(0, yMin - span * 0.08)
+    yMax = yMax + span * 0.08
+    const yDen = yMax - yMin
+
+    const xOf = (index: number) => padLeft + (index / (points.length - 1)) * innerW
+    const yOf = (value: number) => padTop + (1 - (value - yMin) / yDen) * innerH
+
+    const withPath = historyLines.map((line) => {
+      const d = line.values
+        .map((value, idx) => `${idx === 0 ? 'M' : 'L'}${xOf(idx).toFixed(2)},${yOf(value).toFixed(2)}`)
+        .join(' ')
+      return { ...line, d }
+    })
+
+    const yTicks = [0, 0.25, 0.5, 0.75, 1].map((t) => {
+      const y = yMin + (1 - t) * (yMax - yMin)
+      return {
+        y: padTop + t * innerH,
+        label: formatAxisCurrency(y, currencyMode),
+      }
+    })
+
+    const tickCount = Math.min(7, points.length)
+    const xTickIndices = Array.from({ length: tickCount }, (_, i) => Math.round((i * (points.length - 1)) / Math.max(1, tickCount - 1)))
+
+    return { lines: withPath, yMin, yMax, yTicks, width, height, padLeft, padRight, padTop, padBottom, innerW, innerH, xOf, yOf, xTickIndices }
+  }, [filteredHistoryPoints, historyLines, currencyMode])
+
+  const hoveredHistoryPoint = React.useMemo(() => {
+    if (historyHoverIndex == null) return null
+    if (historyHoverIndex < 0 || historyHoverIndex >= filteredHistoryPoints.length) return null
+    return filteredHistoryPoints[historyHoverIndex]
+  }, [filteredHistoryPoints, historyHoverIndex])
+
+  const hoveredHistoryLine = React.useMemo(() => {
+    if (!historyHoverLineKey) return null
+    const line = historyChart.lines.find((item) => item.key === historyHoverLineKey)
+    if (!line || historyHoverIndex == null) return null
+    return {
+      key: line.key,
+      label: line.label,
+      currency: line.currency,
+      color: line.color,
+      value: Number(line.values[historyHoverIndex] || 0),
+    }
+  }, [historyChart.lines, historyHoverIndex, historyHoverLineKey])
+
+  const historyExtremes = React.useMemo(() => {
+    if (historyChart.lines.length === 0) return null
+    const focusLine = historyChart.lines[0]
+    if (!focusLine || focusLine.values.length === 0) return null
+
+    let minIndex = -1
+    let maxIndex = -1
+    let minValue = Number.POSITIVE_INFINITY
+    let maxValue = Number.NEGATIVE_INFINITY
+    focusLine.values.forEach((raw, index) => {
+      const value = Number(raw)
+      if (!Number.isFinite(value)) return
+      if (value < minValue) {
+        minValue = value
+        minIndex = index
+      }
+      if (value > maxValue) {
+        maxValue = value
+        maxIndex = index
+      }
+    })
+    if (minIndex < 0 || maxIndex < 0) return null
+
+    const samePoint = minIndex === maxIndex
+    const formatValue = (value: number) => formatCurrencyWithSymbol(value, focusLine.currency)
+
+    return {
+      color: focusLine.color,
+      low: {
+        index: minIndex,
+        value: minValue,
+        x: historyChart.xOf(minIndex),
+        y: historyChart.yOf(minValue),
+        label: `Low: ${formatValue(minValue)}`,
+        placeBelow: samePoint,
+      },
+      high: {
+        index: maxIndex,
+        value: maxValue,
+        x: historyChart.xOf(maxIndex),
+        y: historyChart.yOf(maxValue),
+        label: `High: ${formatValue(maxValue)}`,
+        placeBelow: false,
+      },
+    }
+  }, [historyChart])
+
+  const formatSelectedCurrency = React.useCallback(
+    (valueEur: number, valueUsd: number) => (
+      currencyMode === 'EUR'
+        ? `€${formatEur(valueEur, { withCode: false })}`
+        : `$${formatUsd(valueUsd, { withCode: false })}`
+    ),
+    [currencyMode]
+  )
+
   return (
     <Stack spacing={2}>
       {notice ? (
@@ -494,19 +788,13 @@ export default function Dashboard() {
                 <Typography variant="h5">Total Portfolio</Typography>
 
                 <Grid container spacing={2}>
-                  <Grid item xs={12} sm={6}>
+                  <Grid item xs={12}>
                     <Box sx={{ p: 0.5 }}>
-                      <Typography variant="overline" color="text.secondary">EUR</Typography>
+                      <Typography variant="overline" color="text.secondary">{currencyMode}</Typography>
                       <Typography variant="h3" sx={{ fontWeight: 700, lineHeight: 1.1 }}>
-                        {formatEur(animatedTotalEur, { withCode: false })}
-                      </Typography>
-                    </Box>
-                  </Grid>
-                  <Grid item xs={12} sm={6}>
-                    <Box sx={{ p: 0.5 }}>
-                      <Typography variant="overline" color="text.secondary">USD</Typography>
-                      <Typography variant="h3" sx={{ fontWeight: 700, lineHeight: 1.1 }}>
-                        {formatUsd(animatedTotalUsd, { withCode: false })}
+                        {currencyMode === 'EUR'
+                          ? formatEur(animatedTotal, { withCode: false })
+                          : formatUsd(animatedTotal, { withCode: false })}
                       </Typography>
                     </Box>
                   </Grid>
@@ -604,6 +892,329 @@ export default function Dashboard() {
 
       <Card variant="outlined">
         <CardContent>
+          <Typography variant="h6" sx={{ mb: 1.5 }}>Portfolio Price History</Typography>
+          {historyChart.lines.length === 0 ? (
+            <Box sx={{ py: 1, mb: 1 }}>
+              <Typography color="text.secondary">
+                Not enough sync history yet. Run sync on multiple days to build the chart.
+              </Typography>
+            </Box>
+          ) : (
+            <Stack spacing={1.5}>
+              <Box sx={{ width: '100%', overflowX: 'auto', position: 'relative' }}>
+                <svg
+                  viewBox={`0 0 ${historyChart.width} ${historyChart.height}`}
+                  style={{ width: '100%', minWidth: 780, height: 'auto' }}
+                  aria-label="Portfolio history chart"
+                  onMouseLeave={() => {
+                    setHistoryHoverIndex(null)
+                    setHistoryHoverLineKey(null)
+                    setHistoryTooltipPos(null)
+                  }}
+                >
+                  {historyChart.yTicks.map((tick, index) => {
+                    return (
+                      <g key={`hgrid-${index}`}>
+                        <line
+                          x1={historyChart.padLeft}
+                          y1={tick.y}
+                          x2={historyChart.width - historyChart.padRight}
+                          y2={tick.y}
+                          stroke="rgba(120,120,120,0.18)"
+                          strokeWidth="1"
+                        />
+                        <text
+                          x={historyChart.padLeft - 8}
+                          y={tick.y + 3}
+                          textAnchor="end"
+                          fontSize="10"
+                          fill="currentColor"
+                          opacity="0.72"
+                        >
+                          {tick.label}
+                        </text>
+                      </g>
+                    )
+                  })}
+
+                  {historyChart.lines.map((line) => (
+                    <path
+                      key={line.key}
+                      d={line.d}
+                      fill="none"
+                      stroke={line.color}
+                      strokeWidth={line.weight}
+                      strokeOpacity={line.weight > 2 ? 1 : 0.7}
+                      strokeLinecap="round"
+                    />
+                  ))}
+
+                  {historyExtremes
+                    ? ([
+                        { key: 'low', point: historyExtremes.low },
+                        { key: 'high', point: historyExtremes.high },
+                      ] as const).map(({ key, point }) => {
+                        const bubbleWidth = Math.max(74, point.label.length * 6.2 + 12)
+                        const minX = historyChart.padLeft + 4
+                        const maxX = historyChart.width - historyChart.padRight - bubbleWidth - 4
+                        const rectX = Math.max(minX, Math.min(maxX, point.x - bubbleWidth / 2))
+                        const chartTop = historyChart.padTop + 2
+                        const chartBottom = historyChart.padTop + historyChart.innerH - 20
+                        const suggestedY = point.placeBelow ? point.y + 10 : point.y - 24
+                        const rectY = Math.max(chartTop, Math.min(chartBottom, suggestedY))
+                        return (
+                          <g key={`extreme-${key}`}>
+                            <circle
+                              cx={point.x}
+                              cy={point.y}
+                              r={4.5}
+                              fill={historyExtremes.color}
+                              stroke="#fff"
+                              strokeWidth="1.5"
+                              opacity="0.95"
+                            />
+                            <rect
+                              x={rectX}
+                              y={rectY}
+                              width={bubbleWidth}
+                              height={18}
+                              rx={9}
+                              ry={9}
+                              fill="rgba(255,255,255,0.92)"
+                              stroke="rgba(150,150,150,0.35)"
+                              strokeWidth="1"
+                            />
+                            <text
+                              x={rectX + bubbleWidth / 2}
+                              y={rectY + 12}
+                              textAnchor="middle"
+                              fontSize="10"
+                              fill="currentColor"
+                              opacity="0.88"
+                              fontWeight={600}
+                            >
+                              {point.label}
+                            </text>
+                          </g>
+                        )
+                      })
+                    : null}
+
+                  {historyHoverIndex != null ? (
+                    <line
+                      x1={historyChart.xOf(historyHoverIndex)}
+                      y1={historyChart.padTop}
+                      x2={historyChart.xOf(historyHoverIndex)}
+                      y2={historyChart.padTop + historyChart.innerH}
+                      stroke="rgba(60,60,60,0.35)"
+                      strokeDasharray="3 3"
+                      strokeWidth="1"
+                    />
+                  ) : null}
+
+                  {historyHoverIndex != null
+                    ? historyChart.lines.map((line) => (
+                        <circle
+                          key={`hover-dot-${line.key}`}
+                          cx={historyChart.xOf(historyHoverIndex)}
+                          cy={historyChart.yOf(Number(line.values[historyHoverIndex] || 0))}
+                          r={line.key === historyHoverLineKey ? 5 : line.weight > 2 ? 4 : 3}
+                          fill={line.color}
+                          stroke="white"
+                          strokeWidth="1.5"
+                          opacity={line.key === historyHoverLineKey ? 1 : 0.75}
+                        />
+                      ))
+                    : null}
+
+                  {historyChart.xTickIndices.map((index) => (
+                    <g key={`xtick-${index}`}>
+                      <line
+                        x1={historyChart.xOf(index)}
+                        y1={historyChart.padTop + historyChart.innerH}
+                        x2={historyChart.xOf(index)}
+                        y2={historyChart.padTop + historyChart.innerH + 4}
+                        stroke="rgba(120,120,120,0.35)"
+                        strokeWidth="1"
+                      />
+                      <text
+                        x={historyChart.xOf(index)}
+                        y={historyChart.padTop + historyChart.innerH + 17}
+                        textAnchor="middle"
+                        fontSize="10"
+                        fill="currentColor"
+                        opacity="0.72"
+                      >
+                        {formatDayLabel(filteredHistoryPoints[index]?.timestamp)}
+                      </text>
+                    </g>
+                  ))}
+
+                  <rect
+                    x={historyChart.padLeft}
+                    y={historyChart.padTop}
+                    width={historyChart.innerW}
+                    height={historyChart.innerH}
+                    fill="transparent"
+                    style={{ cursor: 'crosshair' }}
+                    onMouseMove={(e) => {
+                      const svg = e.currentTarget.ownerSVGElement
+                      if (!svg) return
+                      const rect = svg.getBoundingClientRect()
+                      const scaleX = historyChart.width / rect.width
+                      const scaleY = historyChart.height / rect.height
+                      const x = (e.clientX - rect.left) * scaleX
+                      const y = (e.clientY - rect.top) * scaleY
+                      const ratio = (x - historyChart.padLeft) / historyChart.innerW
+                      const idx = Math.round(ratio * (filteredHistoryPoints.length - 1))
+                      const clamped = Math.max(0, Math.min(filteredHistoryPoints.length - 1, idx))
+                      setHistoryHoverIndex(clamped)
+
+                      let nearestKey: string | null = null
+                      let nearestDist = Number.POSITIVE_INFINITY
+                      for (const line of historyChart.lines) {
+                        const ly = historyChart.yOf(Number(line.values[clamped] || 0))
+                        const dist = Math.abs(ly - y)
+                        if (dist < nearestDist) {
+                          nearestDist = dist
+                          nearestKey = line.key
+                        }
+                      }
+                      setHistoryHoverLineKey(nearestKey)
+                      const localX = e.clientX - rect.left
+                      const localY = e.clientY - rect.top
+                      setHistoryTooltipPos({
+                        x: localX,
+                        y: localY,
+                        alignRight: localX > rect.width - 220,
+                        openDown: localY < 96,
+                      })
+                    }}
+                  />
+                </svg>
+                {hoveredHistoryPoint && hoveredHistoryLine && historyTooltipPos ? (
+                  <Box
+                    sx={{
+                      position: 'absolute',
+                      left: historyTooltipPos.x,
+                      top: historyTooltipPos.y,
+                      transform: historyTooltipPos.openDown
+                        ? (historyTooltipPos.alignRight ? 'translate(-100%, 10px)' : 'translate(10px, 10px)')
+                        : (historyTooltipPos.alignRight ? 'translate(-100%, -100%)' : 'translate(10px, -100%)'),
+                      border: (theme) => `1px solid ${theme.palette.divider}`,
+                      borderRadius: 1.5,
+                      minWidth: 220,
+                      width: 'fit-content',
+                      maxWidth: 420,
+                      px: 1.2,
+                      py: 0.7,
+                      bgcolor: 'background.paper',
+                      boxShadow: 4,
+                      pointerEvents: 'none',
+                      zIndex: 5,
+                    }}
+                  >
+                    <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: 'nowrap' }}>
+                      {formatDateTime(hoveredHistoryPoint.timestamp)}
+                    </Typography>
+                    <Stack direction="row" spacing={0.75} alignItems="center" sx={{ mt: 0.2 }}>
+                      <Box sx={{ width: 9, height: 9, borderRadius: '50%', bgcolor: hoveredHistoryLine.color, flexShrink: 0 }} />
+                      <Typography
+                        variant="caption"
+                        sx={{
+                          fontWeight: hoveredHistoryLine.key.startsWith('total_') ? 700 : 500,
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {hoveredHistoryLine.label}: {formatCurrencyWithSymbol(hoveredHistoryLine.value, hoveredHistoryLine.currency)}
+                      </Typography>
+                    </Stack>
+                  </Box>
+                ) : null}
+              </Box>
+            </Stack>
+          )}
+          <Stack
+            direction={{ xs: 'column', md: 'row' }}
+            spacing={1.5}
+            justifyContent="space-between"
+            alignItems={{ xs: 'flex-start', md: 'center' }}
+            sx={{ mt: historyChart.lines.length === 0 ? 0.5 : 2.25 }}
+          >
+            <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+              {(['1W', '1M', '3M', '6M', '1Y', 'ALL'] as HistoryRangeKey[]).map((range) => (
+                <Button
+                  key={range}
+                  size="small"
+                  variant={historyRange === range ? 'contained' : 'text'}
+                  onClick={() => setHistoryRange(range)}
+                >
+                  {range}
+                </Button>
+              ))}
+            </Stack>
+            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    checked={showTotals}
+                    onChange={(e) => {
+                      const next = e.target.checked
+                      if (!next) {
+                        const activeCount =
+                          (showTotals ? 1 : 0) + (showCoinsLines ? 1 : 0) + (showNftsLines ? 1 : 0)
+                        if (activeCount <= 1) return
+                      }
+                      setShowTotals(next)
+                    }}
+                    size="small"
+                  />
+                }
+                label="Totals"
+              />
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    checked={showCoinsLines}
+                    onChange={(e) => {
+                      const next = e.target.checked
+                      if (!next) {
+                        const activeCount =
+                          (showTotals ? 1 : 0) + (showCoinsLines ? 1 : 0) + (showNftsLines ? 1 : 0)
+                        if (activeCount <= 1) return
+                      }
+                      setShowCoinsLines(next)
+                    }}
+                    size="small"
+                  />
+                }
+                label="Coins"
+              />
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    checked={showNftsLines}
+                    onChange={(e) => {
+                      const next = e.target.checked
+                      if (!next) {
+                        const activeCount =
+                          (showTotals ? 1 : 0) + (showCoinsLines ? 1 : 0) + (showNftsLines ? 1 : 0)
+                        if (activeCount <= 1) return
+                      }
+                      setShowNftsLines(next)
+                    }}
+                    size="small"
+                  />
+                }
+                label="NFTs"
+              />
+            </Stack>
+          </Stack>
+        </CardContent>
+      </Card>
+
+      <Card variant="outlined">
+        <CardContent>
           <Typography variant="h6" sx={{ mb: 2 }}>Coin Allocation</Typography>
           {donutSegments.length === 0 ? (
             <Typography color="text.secondary">No coin data available to calculate allocation.</Typography>
@@ -668,10 +1279,9 @@ export default function Dashboard() {
                       <span>{activeSegment?.name}</span>
                     </Typography>
                     <Typography className="donut-value" sx={{ fontWeight: 800 }}>
-                      €{formatEur(Number(activeSegment?.valueEur || 0), { withCode: false })}
-                    </Typography>
-                    <Typography className="donut-subvalue" sx={{ fontWeight: 800 }}>
-                      ${formatUsd(Number(activeSegment?.valueUsd || 0), { withCode: false })}
+                      {currencyMode === 'EUR'
+                        ? `€${formatEur(Number(activeSegment?.valueEur || 0), { withCode: false })}`
+                        : `$${formatUsd(Number(activeSegment?.valueUsd || 0), { withCode: false })}`}
                     </Typography>
                     <Typography color="text.secondary">{Number(activeSegment?.pct || 0).toFixed(2)}%</Typography>
                   </Box>
@@ -908,7 +1518,8 @@ export default function Dashboard() {
                       whiteSpace: 'nowrap',
                     }}
                   >
-                    {activeClassSegment.label}: {formatEur(activeClassSegment.valueEur)} | {formatUsd(activeClassSegment.valueUsd)} (
+                    {activeClassSegment.label}:{' '}
+                    {formatSelectedCurrency(activeClassSegment.valueEur, activeClassSegment.valueUsd)} (
                     {activeClassSegment.key === 'stable' || activeClassSegment.key === 'other_coins'
                       ? `${activeClassSegment.pctTotal.toFixed(2)}% total, ${activeClassSegment.pctCoins.toFixed(2)}% of Coins`
                       : `${activeClassSegment.pctTotal.toFixed(2)}% total`}
@@ -943,7 +1554,7 @@ export default function Dashboard() {
                             {segment.label}
                           </Typography>
                           <Typography variant="body2" sx={{ color: 'text.primary', whiteSpace: 'nowrap' }}>
-                            <strong>{formatEur(segment.valueEur)}</strong> | <strong>{formatUsd(segment.valueUsd)}</strong>
+                            <strong>{formatSelectedCurrency(segment.valueEur, segment.valueUsd)}</strong>
                           </Typography>
                         </Stack>
                         <Chip
@@ -983,7 +1594,7 @@ export default function Dashboard() {
                                 {child.label}
                               </Typography>
                               <Typography variant="body2" sx={{ color: 'text.primary', whiteSpace: 'nowrap' }}>
-                                <strong>{formatEur(child.valueEur)}</strong> | <strong>{formatUsd(child.valueUsd)}</strong>
+                                <strong>{formatSelectedCurrency(child.valueEur, child.valueUsd)}</strong>
                               </Typography>
                             </Stack>
                             <Chip
@@ -1029,7 +1640,7 @@ export default function Dashboard() {
                           {segment.label}
                         </Typography>
                         <Typography variant="body2" sx={{ color: 'text.primary', whiteSpace: 'nowrap' }}>
-                          <strong>{formatEur(segment.valueEur)}</strong> | <strong>{formatUsd(segment.valueUsd)}</strong>
+                          <strong>{formatSelectedCurrency(segment.valueEur, segment.valueUsd)}</strong>
                         </Typography>
                       </Stack>
                       <Chip

@@ -1,1 +1,1 @@
-from . import binance, eth, nfts, prices, sync
+from . import binance, eth, history, nfts, prices, scheduler, sync

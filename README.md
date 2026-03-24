@@ -100,6 +100,21 @@ Optional local image build before restart:
 BUILD_LOCAL=1 ./scripts/update_prod.sh
 ```
 
+### Automatic Sync Schedule
+
+In Admin, automatic sync supports only:
+- `minutes`
+- `hours`
+- `days`
+- `weeks`
+
+Rules:
+- `time_of_day` is always interpreted in **UTC**.
+- For `minutes`: sync runs every N minutes.
+- For `hours`: sync runs every N hours.
+- For `days`: sync runs every N days at `time_of_day`.
+- For `weeks`: sync runs every N weeks on `day_of_week` at `time_of_day`.
+
 
 
 ## Local Development (optional)
@@ -110,7 +125,7 @@ BUILD_LOCAL=1 ./scripts/update_prod.sh
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r backend/requirements.txt
-uvicorn backend.app.main:app --reload --factory --host 127.0.0.1 --port 8000
+uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 ### Frontend

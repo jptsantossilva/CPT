@@ -81,3 +81,9 @@ class NFTBlacklist(SQLModel, table=True):
     contract: str
     token_id: str
     reason: Optional[str] = None
+
+
+class AppSetting(SQLModel, table=True):
+    # Generic key/value settings storage for admin-managed runtime config.
+    key: str = Field(primary_key=True)
+    value: str

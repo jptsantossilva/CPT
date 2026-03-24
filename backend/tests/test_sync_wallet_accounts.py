@@ -115,6 +115,37 @@ def test_sync_wallet_accounts_bitcoin_wallet_uses_btc_service(monkeypatch):
     assert calls["eth"] == 0
 
 
+def test_sync_wallet_accounts_bitcoin_xpub_uses_btc_service(monkeypatch):
+    rows = [
+        SimpleNamespace(
+            id=13,
+            provider="wallet",
+            identifier="xpub661MyMwAqRbcFtXgS5s4f95m3nM2Z5Db5GsyhQ2E31x4n4t4WRPc8E9vrFica8FWHZpizxgxYkWwaP42CikLzeGWihcYZgToYtL6vhfV3hY",
+        ),
+    ]
+    monkeypatch.setattr(sync, "get_session", lambda: _FakeSessionCtx(rows))
+
+    calls = {"eth": 0, "btc": 0}
+
+    def fake_eth_fetch(_address, chain="ethereum"):
+        calls["eth"] += 1
+        return [{"symbol": "ETH", "balance": 1}]
+
+    def fake_btc_fetch(identifier):
+        calls["btc"] += 1
+        assert identifier.startswith("xpub")
+        return [{"symbol": "BTC", "balance": 0.5}]
+
+    monkeypatch.setattr(sync.eth, "fetch_wallet_balances", fake_eth_fetch)
+    monkeypatch.setattr(sync.btc, "fetch_wallet_balances", fake_btc_fetch)
+
+    holdings = sync._sync_wallet_accounts()
+
+    assert holdings == [{"account_id": 13, "asset": "BTC", "qty": 0.5, "chain": "bitcoin"}]
+    assert calls["btc"] == 1
+    assert calls["eth"] == 0
+
+
 def test_apply_nft_blacklist_forces_hidden_visibility():
     rows = [
         {
