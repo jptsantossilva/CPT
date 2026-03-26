@@ -12,6 +12,7 @@ import { Box, Button, CssBaseline, IconButton, Paper, Stack, ThemeProvider, Tool
 import Assets from './pages/Assets'
 import Dashboard from './pages/Dashboard'
 import Nfts from './pages/Nfts'
+import { updateCurrencySetting } from './shared/api'
 import { buildTheme, type AppMode } from './theme'
 
 const AdminPage = React.lazy(() => import('./pages/Admin'))
@@ -48,6 +49,7 @@ export default function App(){
   }, [theme])
   React.useEffect(() => {
     window.localStorage.setItem('cpt_currency_mode', currencyMode)
+    updateCurrencySetting(currencyMode).catch(() => {})
   }, [currencyMode])
   React.useEffect(() => {
     window.localStorage.setItem('cpt_sidebar_collapsed', isSidebarCollapsed ? '1' : '0')

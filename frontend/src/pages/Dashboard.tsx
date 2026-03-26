@@ -42,6 +42,11 @@ function parseDateMs(value: string | null | undefined): number | null {
   return dt.getTime()
 }
 
+function safeNumber(value: unknown, fallback = 0): number {
+  const n = Number(value)
+  return Number.isFinite(n) ? n : fallback
+}
+
 function formatDuration(totalSeconds: number): string {
   const safe = Math.max(0, Math.floor(totalSeconds))
   const minutes = Math.floor(safe / 60)
@@ -178,8 +183,19 @@ export default function Dashboard({ currencyMode }: { currencyMode: CurrencyMode
   const [historyHoverIndex, setHistoryHoverIndex] = React.useState<number | null>(null)
   const [historyHoverLineKey, setHistoryHoverLineKey] = React.useState<string | null>(null)
   const [historyTooltipPos, setHistoryTooltipPos] = React.useState<{ x: number; y: number; alignRight: boolean; openDown: boolean } | null>(null)
-  const totalEur = snapshot?.total_eur ? Number(snapshot.total_eur) : 0
-  const totalUsd = snapshot?.total_usd ? Number(snapshot.total_usd) : 0
+  const snapshotMeta = React.useMemo(() => {
+    const raw = snapshot?.meta
+    if (!raw) return null
+    if (typeof raw === 'object') return raw
+    if (typeof raw !== 'string') return null
+    try {
+      return JSON.parse(raw)
+    } catch {
+      return null
+    }
+  }, [snapshot?.meta])
+  const totalEur = safeNumber(snapshotMeta?.totals?.portfolio_eur, safeNumber(snapshot?.total_eur))
+  const totalUsd = safeNumber(snapshotMeta?.totals?.portfolio_usd, safeNumber(snapshot?.total_usd))
   const totalSelected = currencyMode === 'EUR' ? totalEur : totalUsd
   const [syncLoading, setSyncLoading] = React.useState(false)
   const [syncStatus, setSyncStatus] = React.useState<SyncStatus | null>(null)

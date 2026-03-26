@@ -14,6 +14,7 @@ engine = create_engine(DB_URL, echo=False)
 def init_db():
     SQLModel.metadata.create_all(engine)
     _ensure_nft_holding_columns()
+    _ensure_notification_anchor_columns()
 
 
 def _ensure_nft_holding_columns() -> None:
@@ -41,6 +42,21 @@ def _ensure_nft_holding_columns() -> None:
                 conn.execute(text(stmt))
     except Exception:
         # Keep startup resilient; sync/list APIs can still operate with defaults.
+        return
+
+
+def _ensure_notification_anchor_columns() -> None:
+    """Best-effort schema compatibility for notification_anchor table."""
+    try:
+        insp = inspect(engine)
+        if "notificationanchor" not in insp.get_table_names():
+            return
+        existing = {str(c.get("name")) for c in insp.get_columns("notificationanchor")}
+        if "last_sync_snapshot_id" in existing:
+            return
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE notificationanchor ADD COLUMN last_sync_snapshot_id INTEGER"))
+    except Exception:
         return
 
 

@@ -162,7 +162,7 @@ def _loop() -> None:
                     schedule["interval_value"],
                     schedule["interval_unit"],
                 )
-                sync.sync_all()
+                sync.sync_all(trigger="auto")
                 with _lock:
                     _next_run_at = _compute_next_run(_utc_now(), schedule)
                 _stop_event.wait(1)

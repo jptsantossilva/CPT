@@ -115,6 +115,30 @@ Rules:
 - For `days`: sync runs every N days at `time_of_day`.
 - For `weeks`: sync runs every N weeks on `day_of_week` at `time_of_day`.
 
+### Portfolio Notifications (Email / Telegram)
+
+Backend now supports configurable notifications in Admin:
+- one or more notification configs
+- one or more recipients per config
+- channel per config: `email` or `telegram`
+- schedule mode: `inherit` (Automatic Sync Schedule) or `custom`
+
+Main admin endpoints:
+- `GET /admin/notifications/`
+- `POST /admin/notifications/`
+- `PUT /admin/notifications/{id}`
+- `PUT /admin/notifications/{id}/recipients`
+- `GET /admin/notifications/{id}/preview`
+- `POST /admin/notifications/{id}/run`
+
+Message includes:
+- total portfolio value
+- variation vs last successful notification
+- top 5 movers up and top 5 movers down (coins + NFTs)
+
+Detailed technical design:
+- `backend/README_NOTIFICATIONS.md`
+
 
 
 ## Local Development (optional)

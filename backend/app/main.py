@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from sqlmodel import select
 
 from . import db, services
-from .api import binance_accounts, sync_schedule, wallets
+from .api import binance_accounts, notifications, sync_schedule, wallets
 from .models import Snapshot
 
 app = FastAPI(title="Crypto Portfolio Tracker")
@@ -27,10 +27,12 @@ app.add_middleware(
 def on_startup():
     db.init_db()
     services.scheduler.start()
+    services.notifications.start()
 
 
 @app.on_event("shutdown")
 def on_shutdown():
+    services.notifications.stop()
     services.scheduler.stop()
 
 
@@ -44,7 +46,7 @@ async def sync(background_tasks: BackgroundTasks):
     """Trigger an immediate sync. The backend runs sync in background."""
     if services.sync.is_sync_running():
         return {"status": "already_running", "sync": services.sync.get_sync_status()}
-    background_tasks.add_task(services.sync.sync_all)
+    background_tasks.add_task(services.sync.sync_all, "manual")
     return {"status": "sync_started", "sync": services.sync.get_sync_status()}
 
 
@@ -107,6 +109,10 @@ class NftVisibilityUpdate(BaseModel):
     visibility: str
 
 
+class CurrencySettingUpdate(BaseModel):
+    currency: str
+
+
 @app.put("/nfts/{nft_id}/visibility")
 def update_nft_visibility(nft_id: int, payload: NftVisibilityUpdate):
     try:
@@ -117,7 +123,21 @@ def update_nft_visibility(nft_id: int, payload: NftVisibilityUpdate):
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+@app.get("/settings/currency")
+def get_currency_setting():
+    return {"currency": services.notifications.get_notification_currency()}
+
+
+@app.put("/settings/currency")
+def update_currency_setting(payload: CurrencySettingUpdate):
+    try:
+        return {"currency": services.notifications.set_notification_currency(payload.currency)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 # admin routes
 app.include_router(binance_accounts.router)
 app.include_router(wallets.router)
 app.include_router(sync_schedule.router)
+app.include_router(notifications.router)

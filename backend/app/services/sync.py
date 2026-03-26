@@ -331,8 +331,11 @@ def _persist_daily_snapshot(
     )
 
 
-def sync_all() -> None:
+def sync_all(trigger: str = "manual") -> None:
     """Fetch holdings, prices, and persist both holdings and snapshot totals."""
+    trigger_mode = str(trigger or "manual").strip().lower()
+    if trigger_mode not in {"manual", "auto"}:
+        trigger_mode = "manual"
     started = _utc_now_iso()
     _set_state(
         status="running",
@@ -469,6 +472,7 @@ def sync_all() -> None:
             }
 
         history_meta = {
+            "sync_trigger": trigger_mode,
             "totals": {
                 "coins_eur": total_eur,
                 "coins_usd": total_usd,

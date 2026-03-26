@@ -87,3 +87,68 @@ class AppSetting(SQLModel, table=True):
     # Generic key/value settings storage for admin-managed runtime config.
     key: str = Field(primary_key=True)
     value: str
+
+
+class NotificationConfig(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str
+    channel: str  # email|telegram
+    enabled: bool = True
+    schedule_mode: str = "inherit"  # inherit|custom
+    interval_value: int = 1
+    interval_unit: str = "days"  # minutes|hours|days|weeks
+    time_of_day: str = "00:00"  # HH:MM
+    day_of_week: str = "monday"
+    timezone: str = "UTC"
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class NotificationRecipient(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    notification_id: int
+    type: str  # email|telegram_chat
+    value: str  # email or chat_id
+    enabled: bool = True
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class NotificationAnchor(SQLModel, table=True):
+    notification_id: int = Field(primary_key=True)
+    last_snapshot_id: Optional[int] = None
+    # Last sync Snapshot.id consumed by this notification scheduler.
+    last_sync_snapshot_id: Optional[int] = None
+    last_sent_at: Optional[datetime] = None
+
+
+class NotificationRun(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    notification_id: int
+    status: str  # running|sent|partial|failed
+    reason: str = "scheduled"  # scheduled|manual
+    scheduled_for: Optional[datetime] = None
+    started_at: datetime = Field(default_factory=datetime.utcnow)
+    finished_at: Optional[datetime] = None
+    sent_recipients: int = 0
+    failed_recipients: int = 0
+    payload_json: Optional[str] = None
+    error: Optional[str] = None
+
+
+class NotificationSnapshot(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    notification_id: int
+    captured_at: datetime = Field(default_factory=datetime.utcnow)
+    total_eur: float
+    total_usd: Optional[float] = None
+    base_snapshot_id: Optional[int] = None
+
+
+class NotificationAssetSnapshot(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    snapshot_id: int
+    asset_type: str  # coin|nft
+    asset_key: str
+    asset_label: str
+    value_eur: float
+    value_usd: Optional[float] = None

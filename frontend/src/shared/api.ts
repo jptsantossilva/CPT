@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000'
+const API_BASE = import.meta.env.VITE_API_BASE || '/api'
 export type SyncStatus = {
   status: 'idle' | 'running' | 'completed' | 'failed'
   progress: number
@@ -20,6 +20,40 @@ export type SyncSchedule = {
   time_of_day: string
   day_of_week: 'monday' | 'tuesday' | 'wednesday' | 'thursday' | 'friday' | 'saturday' | 'sunday'
   next_run_at?: string | null
+}
+
+export type CurrencySetting = {
+  currency: 'EUR' | 'USD'
+}
+
+export type NotificationChannel = 'email' | 'telegram'
+export type RecipientType = 'email' | 'telegram_chat'
+export type ScheduleMode = 'inherit' | 'custom'
+
+export type NotificationRecipient = {
+  id?: number | null
+  type: RecipientType
+  value: string
+  enabled: boolean
+}
+
+export type NotificationConfig = {
+  id: number
+  name: string
+  channel: NotificationChannel
+  enabled: boolean
+  schedule_mode: ScheduleMode
+  interval_value: number
+  interval_unit: 'minutes' | 'hours' | 'days' | 'weeks'
+  time_of_day: string
+  day_of_week: 'monday' | 'tuesday' | 'wednesday' | 'thursday' | 'friday' | 'saturday' | 'sunday'
+  timezone: string
+  created_at?: string | null
+  updated_at?: string | null
+  last_sent_at?: string | null
+  next_run_at?: string | null
+  is_due?: boolean
+  recipients: NotificationRecipient[]
 }
 
 export type PortfolioHistoryPoint = {
@@ -171,6 +205,42 @@ export async function updateSyncSchedule(payload: Partial<SyncSchedule>) {
   return apiPut<SyncSchedule>('/admin/sync-schedule/', payload)
 }
 
+export async function fetchCurrencySetting() {
+  return apiGet<CurrencySetting>('/settings/currency')
+}
+
+export async function updateCurrencySetting(currency: 'EUR' | 'USD') {
+  return apiPut<CurrencySetting>('/settings/currency', { currency })
+}
+
 export async function fetchPortfolioHistory(limit = 800) {
   return apiGet<PortfolioHistoryResponse>(`/history/portfolio?limit=${encodeURIComponent(String(limit))}`)
+}
+
+export async function listNotifications() {
+  return apiGet<NotificationConfig[]>('/admin/notifications/')
+}
+
+export async function createNotification(payload: Partial<NotificationConfig>) {
+  return apiPost<NotificationConfig>('/admin/notifications/', payload)
+}
+
+export async function updateNotification(notificationId: number, payload: Partial<NotificationConfig>) {
+  return apiPut<NotificationConfig>(`/admin/notifications/${notificationId}`, payload)
+}
+
+export async function deleteNotification(notificationId: number) {
+  return apiDelete<{ status: string }>(`/admin/notifications/${notificationId}`)
+}
+
+export async function replaceNotificationRecipients(notificationId: number, recipients: NotificationRecipient[]) {
+  return apiPut<NotificationConfig>(`/admin/notifications/${notificationId}/recipients`, { recipients })
+}
+
+export async function previewNotification(notificationId: number) {
+  return apiGet<any>(`/admin/notifications/${notificationId}/preview`)
+}
+
+export async function runNotificationNow(notificationId: number) {
+  return apiPost<any>(`/admin/notifications/${notificationId}/run`)
 }

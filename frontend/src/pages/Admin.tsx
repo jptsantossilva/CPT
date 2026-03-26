@@ -5,6 +5,7 @@ import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
 import EditRoundedIcon from '@mui/icons-material/EditRounded'
 import SaveRoundedIcon from '@mui/icons-material/SaveRounded'
 import { Alert, Box, Button, Card, CardContent, Divider, Grid, List, ListItem, ListItemText, MenuItem, Stack, TextField, Typography } from '@mui/material'
+import NotificationsSection from './admin/NotificationsSection'
 import {
   createBinanceAccount,
   createWallet,
@@ -392,6 +393,8 @@ export default function Admin() {
           </Box>
         </CardContent>
       </Card>
+
+      <NotificationsSection />
 
       <Card variant="outlined">
         <CardContent>

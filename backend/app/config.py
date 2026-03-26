@@ -28,6 +28,13 @@ class Settings(BaseSettings):
     BTC_API_BASE: AnyHttpUrl = "https://blockstream.info/api"
     ENCRYPTION_KEY: str | None = None
     COINGECKO_API_BASE: AnyHttpUrl = "https://api.coingecko.com/api/v3"
+    SMTP_HOST: str | None = None
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: str | None = None
+    SMTP_PASSWORD: str | None = None
+    SMTP_FROM: str | None = None
+    SMTP_USE_TLS: bool = True
+    TELEGRAM_BOT_TOKEN: str | None = None
     PORT: int = 8000
 
     class Config:
