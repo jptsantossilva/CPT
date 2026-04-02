@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2026.04.02]
+
+### Changed
+- Refined Portfolio Notifications scheduling: `Automatic Sync Schedule` now triggers only after new automatic sync snapshots (manual sync snapshots are ignored).
+- Improved notification analytics logic: comparison is based on latest vs previous sync snapshots, with better filtering for noisy/low-value movers.
+- Updated notification currency handling to follow app `USD/EUR` preference and send a single selected currency in messages.
+- Redesigned notification email content (plain text + HTML): cleaner portfolio header, compact period line, colored trend indicators, and simplified Top 5 sections.
+- Simplified Admin notification wording/labels and schedule help text for better clarity.
+
 ## [2026.03.26]
 
 ### Changed

@@ -433,9 +433,11 @@ def sync_all(trigger: str = "manual") -> None:
         total_eur = 0.0
         total_usd = 0.0
         coin_totals_by_symbol: dict[str, dict[str, float]] = {}
+        coin_qty_by_symbol: dict[str, float] = {}
         for h in holdings:
             sym = h["asset"]
             p = price_map.get(sym, {"price_eur": 0, "price_usd": 0})
+            qty = float(h["qty"] or 0.0)
             value_eur = h["qty"] * float(p.get("price_eur", 0) or 0)
             value_usd = h["qty"] * float(p.get("price_usd", 0) or 0)
             total_eur += value_eur
@@ -444,6 +446,7 @@ def sync_all(trigger: str = "manual") -> None:
             curr["eur"] += value_eur
             curr["usd"] += value_usd
             coin_totals_by_symbol[sym] = curr
+            coin_qty_by_symbol[sym] = float(coin_qty_by_symbol.get(sym) or 0.0) + qty
 
         nft_totals_by_key: dict[str, dict[str, object]] = {}
         nfts_total_eur = 0.0
@@ -482,11 +485,27 @@ def sync_all(trigger: str = "manual") -> None:
                 "portfolio_usd": total_usd + nfts_total_usd,
             },
             "coins": [
-                {"key": sym, "name": sym, "eur": vals["eur"], "usd": vals["usd"]}
+                {
+                    "key": sym,
+                    "name": sym,
+                    "eur": vals["eur"],
+                    "usd": vals["usd"],
+                    "qty": float(coin_qty_by_symbol.get(sym) or 0.0),
+                    "unit_eur": (
+                        float(vals["eur"]) / float(coin_qty_by_symbol.get(sym) or 0.0)
+                        if float(coin_qty_by_symbol.get(sym) or 0.0) > 0
+                        else 0.0
+                    ),
+                    "unit_usd": (
+                        float(vals["usd"]) / float(coin_qty_by_symbol.get(sym) or 0.0)
+                        if float(coin_qty_by_symbol.get(sym) or 0.0) > 0
+                        else 0.0
+                    ),
+                }
                 for sym, vals in sorted(coin_totals_by_symbol.items(), key=lambda kv: kv[1]["eur"], reverse=True)
             ],
             "nfts": [
-                {"key": key, **vals}
+                {"key": key, "qty": 1.0, "unit_eur": float(vals["eur"]), "unit_usd": float(vals["usd"]), **vals}
                 for key, vals in sorted(nft_totals_by_key.items(), key=lambda kv: float(kv[1]["eur"]), reverse=True)
             ],
         }

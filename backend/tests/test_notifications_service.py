@@ -37,9 +37,11 @@ def test_render_message_first_run_contains_na():
         top_down=[],
     )
     assert subject == "Portfolio update - 2026-03-25"
-    assert "Variation vs previous snapshot: N/A" in body
-    assert "Snapshot comparison: n/a -> 2026-03-25 14:30:00 UTC (Diff n/a)" in body
-    assert "Portfolio Snapshot" in body_html
+    assert "Portfolio: 1,080.00 USD" in body
+    assert "Change: n/a (need at least 2 sync snapshots)" in body
+    assert "Period: n/a -> 2026-03-25 14:30:00 UTC (n/a)" in body
+    assert "1,080.00" in body_html
+    assert " USD" in body_html
 
 
 def test_compute_next_run_minutes_and_weekly():

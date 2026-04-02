@@ -57,6 +57,13 @@ def _format_sync_timestamp(value: datetime | None) -> str:
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
+def _format_sync_timestamp_short(value: datetime | None) -> str:
+    if not isinstance(value, datetime):
+        return "n/a"
+    dt = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).strftime("%d %b %H:%M UTC")
+
+
 def _format_sync_gap(current: datetime | None, previous: datetime | None) -> str:
     if not isinstance(current, datetime) or not isinstance(previous, datetime):
         return "n/a"
@@ -284,12 +291,20 @@ def _extract_sync_snapshot_data(snapshot: Snapshot | None) -> tuple[dict[str, fl
         if not key:
             continue
         label = str(row.get("name") or key).strip()
+        qty = _safe_float(row.get("qty"))
+        value_eur = _safe_float(row.get("eur"))
+        value_usd = _safe_float(row.get("usd"))
+        unit_eur = _safe_float(row.get("unit_eur", (value_eur / qty) if qty > 0 else 0.0))
+        unit_usd = _safe_float(row.get("unit_usd", (value_usd / qty) if qty > 0 else 0.0))
         assets[f"coin:{key}"] = {
             "asset_type": "coin",
             "asset_key": f"coin:{key}",
             "asset_label": label,
-            "value_eur": _safe_float(row.get("eur")),
-            "value_usd": _safe_float(row.get("usd")),
+            "qty": qty,
+            "value_eur": value_eur,
+            "value_usd": value_usd,
+            "unit_eur": unit_eur,
+            "unit_usd": unit_usd,
         }
 
     for row in meta.get("nfts") or []:
@@ -299,12 +314,18 @@ def _extract_sync_snapshot_data(snapshot: Snapshot | None) -> tuple[dict[str, fl
         if not key:
             continue
         label = str(row.get("name") or key).strip()
+        value_eur = _safe_float(row.get("eur"))
+        value_usd = _safe_float(row.get("usd"))
+        qty = _safe_float(row.get("qty", 1.0))
         assets[f"nft:{key}"] = {
             "asset_type": "nft",
             "asset_key": f"nft:{key}",
             "asset_label": label,
-            "value_eur": _safe_float(row.get("eur")),
-            "value_usd": _safe_float(row.get("usd")),
+            "qty": qty if qty > 0 else 1.0,
+            "value_eur": value_eur,
+            "value_usd": value_usd,
+            "unit_eur": _safe_float(row.get("unit_eur", value_eur)),
+            "unit_usd": _safe_float(row.get("unit_usd", value_usd)),
         }
 
     totals_out = {
@@ -394,6 +415,47 @@ def _compute_movers(
     return top_up[:5], top_down[:5]
 
 
+def _compute_unit_price_movers(
+    current_assets: dict[str, dict[str, Any]],
+    base_assets: dict[str, dict[str, Any]],
+    currency: str = "EUR",
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    selected_unit = "unit_usd" if str(currency or "EUR").upper() == "USD" else "unit_eur"
+    moves: list[dict[str, Any]] = []
+    for key, current in current_assets.items():
+        base = base_assets.get(key)
+        if not base:
+            continue
+        current_usd = float(current.get("value_usd") or 0.0)
+        base_usd = float(base.get("value_usd") or 0.0)
+        if current_usd <= _MIN_MOVER_VALUE_USD or base_usd <= _MIN_MOVER_VALUE_USD:
+            continue
+        old_unit = float(base.get(selected_unit) or 0.0)
+        if old_unit <= 0:
+            continue
+        new_unit = float(current.get(selected_unit) or 0.0)
+        delta_abs = new_unit - old_unit
+        delta_pct = (delta_abs / old_unit) * 100.0
+        moves.append(
+            {
+                "asset_key": key,
+                "asset_label": str(current.get("asset_label") or key),
+                "asset_type": str(current.get("asset_type") or "coin"),
+                "currency": str(currency or "EUR").upper(),
+                "delta_pct": delta_pct,
+                "delta_abs": delta_abs,
+                "current_value": new_unit,
+                "base_value": old_unit,
+            }
+        )
+
+    top_up = [m for m in moves if float(m["delta_pct"]) > 0]
+    top_down = [m for m in moves if float(m["delta_pct"]) < 0]
+    top_up.sort(key=lambda x: float(x["delta_pct"]), reverse=True)
+    top_down.sort(key=lambda x: float(x["delta_pct"]))
+    return top_up[:5], top_down[:5]
+
+
 def _render_message(
     *,
     currency: str,
@@ -407,23 +469,29 @@ def _render_message(
     curr = "USD" if str(currency or "").upper() == "USD" else "EUR"
     current_sync = _format_sync_timestamp(current_sync_ts)
     previous_sync = _format_sync_timestamp(previous_sync_ts)
+    current_sync_short = _format_sync_timestamp_short(current_sync_ts)
+    previous_sync_short = _format_sync_timestamp_short(previous_sync_ts)
     sync_gap = _format_sync_gap(current_sync_ts, previous_sync_ts)
-    if base_total is None:
-        delta_line = "Variation vs previous snapshot: N/A (need at least 2 sync snapshots)"
-    else:
+    delta_abs: float | None = None
+    delta_pct: float | None = None
+    if base_total is not None:
         base = float(base_total or 0.0)
         delta_abs = current_total - base
         if base > 0:
             delta_pct = (delta_abs / base) * 100.0
-            delta_line = f"Variation vs previous snapshot: {delta_pct:+.2f}% ({delta_abs:+.2f} {curr})"
-        else:
-            delta_line = f"Variation vs previous snapshot: N/A ({delta_abs:+.2f} {curr})"
 
     lines = [
-        "Portfolio Snapshot",
-        f"Total: {current_total:,.2f} {curr}",
-        delta_line,
-        f"Snapshot comparison: {previous_sync} -> {current_sync} (Diff {sync_gap})",
+        f"Portfolio: {current_total:,.2f} {curr}",
+        (
+            f"Change: {delta_abs:+,.2f} {curr} ({delta_pct:+.2f}%)"
+            if delta_abs is not None and delta_pct is not None
+            else (
+                f"Change: {delta_abs:+,.2f} {curr} (n/a)"
+                if delta_abs is not None
+                else "Change: n/a (need at least 2 sync snapshots)"
+            )
+        ),
+        f"Period: {previous_sync} -> {current_sync} ({sync_gap})",
         "",
         "Top 5 up:",
     ]
@@ -448,41 +516,61 @@ def _render_message(
         return f"<span style=\"color:{_color_for(value)};font-weight:600;\">{value:+.2f}%</span>"
 
     def _fmt_colored_amount(value: float, code: str) -> str:
-        return f"<span style=\"color:{_color_for(value)};font-weight:600;\">({value:+,.2f} {code})</span>"
+        return f"<span style=\"color:{_color_for(value)};font-weight:600;\">{value:+,.2f} {code}</span>"
 
-    if base_total is None:
-        variation_html = "Variation vs previous snapshot: N/A (need at least 2 sync snapshots)"
+    if delta_abs is None:
+        variation_html = "Change: n/a (need at least 2 sync snapshots)"
+    elif delta_pct is None:
+        variation_html = f"Change: {_fmt_colored_amount(delta_abs, curr)} <span style=\"opacity:.72;\">(n/a)</span>"
     else:
-        base = float(base_total or 0.0)
-        delta_abs = current_total - base
-        if base > 0:
-            delta_pct = (delta_abs / base) * 100.0
-            variation_html = (
-                "Variation vs previous snapshot: "
-                f"{_fmt_colored_pct(delta_pct)} {_fmt_colored_amount(delta_abs, curr)}"
-            )
-        else:
-            variation_html = f"Variation vs previous snapshot: N/A {_fmt_colored_amount(delta_abs, curr)}"
+        variation_html = (
+            "Change: "
+            f"{_fmt_colored_amount(delta_abs, curr)} {_fmt_colored_pct(delta_pct)}"
+        )
 
     top_up_html = "".join(
-        f"<li>{escape(str(item.get('asset_label') or 'n/a'))} {_fmt_colored_pct(float(item.get('delta_pct') or 0.0))}</li>"
+        f"<li>{escape(str(item.get('asset_label') or 'n/a'))} <span style=\"color:#15803d;font-weight:700;\">▲</span> "
+        f"{_fmt_colored_pct(float(item.get('delta_pct') or 0.0))}</li>"
         for item in top_up
     ) or "<li>none</li>"
     top_down_html = "".join(
-        f"<li>{escape(str(item.get('asset_label') or 'n/a'))} {_fmt_colored_pct(float(item.get('delta_pct') or 0.0))}</li>"
+        f"<li>{escape(str(item.get('asset_label') or 'n/a'))} <span style=\"color:#b91c1c;font-weight:700;\">▼</span> "
+        f"{_fmt_colored_pct(float(item.get('delta_pct') or 0.0))}</li>"
         for item in top_down
     ) or "<li>none</li>"
 
+    change_amount_html = (
+        _fmt_colored_amount(delta_abs, curr) if delta_abs is not None else "<span style=\"opacity:.72;\">n/a</span>"
+    )
+    change_pct_html = (
+        _fmt_colored_pct(delta_pct) if delta_pct is not None else "<span style=\"opacity:.72;\">n/a</span>"
+    )
+    trend_arrow = "▲" if (delta_abs is not None and delta_abs >= 0) else ("▼" if delta_abs is not None else "•")
+    trend_color = "#15803d" if (delta_abs is not None and delta_abs >= 0) else ("#b91c1c" if delta_abs is not None else "#666")
+
     body_html = (
         "<div style=\"font-family:Arial,sans-serif;line-height:1.5;color:#111;\">"
-        "<h3 style=\"margin:0 0 8px 0;\">Portfolio Snapshot</h3>"
-        f"<p style=\"margin:0;\"><strong>Total:</strong> {current_total:,.2f} {curr}</p>"
-        f"<p style=\"margin:0;\">{variation_html}</p>"
-        f"<p style=\"margin:0 0 12px 0;\"><strong>Snapshot comparison:</strong> {escape(previous_sync)} -&gt; {escape(current_sync)} "
-        f"(Diff {escape(sync_gap)})</p>"
-        "<p style=\"margin:0 0 4px 0;\"><strong>Top 5 up</strong></p>"
+        "<div style=\"font-size:24px;font-weight:700;line-height:1.2;margin:0 0 12px 0;\">Portfolio Update</div>"
+        "<table role=\"presentation\" cellspacing=\"0\" cellpadding=\"0\" style=\"border-collapse:collapse;width:auto;margin:0 0 4px 0;\">"
+        "<tr>"
+        "<td style=\"line-height:1.1;white-space:nowrap;vertical-align:bottom;\">"
+        f"<span style=\"font-size:22px;font-weight:700;\">{current_total:,.2f}</span>"
+        f"<span style=\"font-size:18px;font-weight:600;color:#374151;\"> {curr}</span>"
+        "</td>"
+        "<td style=\"vertical-align:bottom;white-space:nowrap;padding-left:10px;\">"
+        f"<span style=\"font-size:16px;line-height:1.1;\">{change_amount_html}</span>"
+        "<span style=\"display:inline-block;width:8px;\"></span>"
+        f"<span style=\"color:{trend_color};font-weight:700;font-size:13px;line-height:1.2;\">{trend_arrow}</span>"
+        "<span style=\"display:inline-block;width:4px;\"></span>"
+        f"<span style=\"font-size:15px;line-height:1.1;\">{change_pct_html}</span>"
+        "</td>"
+        "</tr>"
+        "</table>"
+        f"<p style=\"margin:0 0 14px 0;color:#666;font-size:12px;\">{escape(previous_sync_short)} -&gt; {escape(current_sync_short)} "
+        f"&middot; {escape(sync_gap)}</p>"
+        "<p style=\"margin:0 0 6px 0;font-size:15px;\"><strong>Top 5 up</strong></p>"
         f"<ol style=\"margin:0 0 12px 20px;padding:0;\">{top_up_html}</ol>"
-        "<p style=\"margin:0 0 4px 0;\"><strong>Top 5 down</strong></p>"
+        "<p style=\"margin:2px 0 6px 0;font-size:15px;\"><strong>Top 5 down</strong></p>"
         f"<ol style=\"margin:0 0 0 20px;padding:0;\">{top_down_html}</ol>"
         "</div>"
     )
@@ -722,7 +810,9 @@ def execute_notification(notification_id: int, reason: str = "scheduled") -> dic
         if previous_sync_snapshot
         else None
     )
-    top_up, top_down = _compute_movers(current_assets, previous_assets, currency=selected_currency)
+    top_up, top_down = _compute_unit_price_movers(
+        current_assets, previous_assets, currency=selected_currency
+    )
     subject, body, body_html = _render_message(
         currency=selected_currency,
         current_total=current_total,
@@ -1013,7 +1103,9 @@ def preview(notification_id: int) -> dict[str, Any]:
         if previous_sync_snapshot
         else None
     )
-    top_up, top_down = _compute_movers(current_assets, previous_assets, currency=selected_currency)
+    top_up, top_down = _compute_unit_price_movers(
+        current_assets, previous_assets, currency=selected_currency
+    )
     subject, body, body_html = _render_message(
         currency=selected_currency,
         current_total=current_total,
