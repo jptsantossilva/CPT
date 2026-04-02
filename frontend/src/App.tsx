@@ -1,6 +1,7 @@
 import React from 'react'
 import AccountBalanceWalletRoundedIcon from '@mui/icons-material/AccountBalanceWalletRounded'
 import AdminPanelSettingsRoundedIcon from '@mui/icons-material/AdminPanelSettingsRounded'
+import SettingsSuggestRoundedIcon from '@mui/icons-material/SettingsSuggestRounded'
 import CollectionsRoundedIcon from '@mui/icons-material/CollectionsRounded'
 import DarkModeRoundedIcon from '@mui/icons-material/DarkModeRounded'
 import DashboardRoundedIcon from '@mui/icons-material/DashboardRounded'
@@ -15,12 +16,14 @@ import Nfts from './pages/Nfts'
 import { updateCurrencySetting } from './shared/api'
 import { buildTheme, type AppMode } from './theme'
 
-const AdminPage = React.lazy(() => import('./pages/Admin'))
+const AccountsPage = React.lazy(() => import('./pages/Admin'))
+const AutomationPage = React.lazy(() => import('./pages/Automation'))
 type Theme = AppMode
 type CurrencyMode = 'EUR' | 'USD'
+const APP_VERSION = '2026.04.02'
 
 export default function App(){
-  const [route, setRoute] = React.useState<'dashboard'|'assets'|'nfts'|'admin'>('dashboard')
+  const [route, setRoute] = React.useState<'dashboard'|'assets'|'nfts'|'accounts'|'automation'>('dashboard')
   const [theme, setTheme] = React.useState<Theme>(() => {
     const saved = window.localStorage.getItem('cpt_theme')
     if (saved === 'dark' || saved === 'light') return saved
@@ -35,11 +38,12 @@ export default function App(){
     const saved = window.localStorage.getItem('cpt_sidebar_collapsed')
     return saved === '1'
   })
-  const navItems: Array<{ key: 'dashboard' | 'assets' | 'nfts' | 'admin'; label: string; icon: React.ReactNode }> = [
+  const navItems: Array<{ key: 'dashboard' | 'assets' | 'nfts' | 'accounts' | 'automation'; label: string; icon: React.ReactNode }> = [
     { key: 'dashboard', label: 'Dashboard', icon: <DashboardRoundedIcon fontSize="small" /> },
     { key: 'assets', label: 'Coins', icon: <PaidRoundedIcon fontSize="small" /> },
     { key: 'nfts', label: 'NFTs', icon: <CollectionsRoundedIcon fontSize="small" /> },
-    { key: 'admin', label: 'Admin', icon: <AdminPanelSettingsRoundedIcon fontSize="small" /> },
+    { key: 'accounts', label: 'Accounts', icon: <AdminPanelSettingsRoundedIcon fontSize="small" /> },
+    { key: 'automation', label: 'Sync & Notifications', icon: <SettingsSuggestRoundedIcon fontSize="small" /> },
   ]
   const themeObj = React.useMemo(() => buildTheme(theme), [theme])
   const activeNav = navItems.find((item) => item.key === route)
@@ -170,6 +174,8 @@ export default function App(){
                     t.palette.mode === 'dark'
                       ? 'linear-gradient(170deg, rgba(17,24,45,0.88), rgba(13,19,37,0.92))'
                       : 'linear-gradient(170deg, rgba(255,255,255,0.92), rgba(248,251,255,0.94))',
+                  display: 'flex',
+                  flexDirection: 'column',
                 }}
               >
                 <Stack
@@ -180,6 +186,7 @@ export default function App(){
                     overflowX: { xs: 'auto', md: 'visible' },
                     pb: { xs: 0.5, md: 0 },
                     alignItems: { md: isSidebarCollapsed ? 'center' : 'stretch' },
+                    flex: 1,
                   }}
                 >
                   <Tooltip title={isSidebarCollapsed ? 'Expand menu' : 'Collapse menu'}>
@@ -236,13 +243,31 @@ export default function App(){
                     </Tooltip>
                   ))}
                 </Stack>
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{
+                    mt: 1,
+                    px: 0.5,
+                    alignSelf: 'flex-start',
+                    opacity: 0.75,
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {isSidebarCollapsed ? `v${APP_VERSION}` : `Version ${APP_VERSION}`}
+                </Typography>
               </Paper>
 
               <Box sx={{ flex: 1, minWidth: 0 }}>
                 {route === 'dashboard' ? <Dashboard currencyMode={currencyMode} /> : route === 'assets' ? <Assets/> : route === 'nfts' ? <Nfts/> : <></>}
-                {route === 'admin' ? (
-                  <React.Suspense fallback={<Typography color="text.secondary">Loading Admin...</Typography>}>
-                    <AdminPage />
+                {route === 'accounts' ? (
+                  <React.Suspense fallback={<Typography color="text.secondary">Loading Accounts...</Typography>}>
+                    <AccountsPage />
+                  </React.Suspense>
+                ) : null}
+                {route === 'automation' ? (
+                  <React.Suspense fallback={<Typography color="text.secondary">Loading Sync & Notifications...</Typography>}>
+                    <AutomationPage />
                   </React.Suspense>
                 ) : null}
               </Box>

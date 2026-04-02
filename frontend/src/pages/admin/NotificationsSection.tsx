@@ -13,8 +13,12 @@ import {
   Card,
   CardContent,
   Chip,
+  Dialog,
+  DialogContent,
+  DialogTitle,
   Divider,
   Grid,
+  IconButton,
   List,
   ListItem,
   ListItemText,
@@ -24,6 +28,7 @@ import {
   Tooltip,
   Typography,
 } from '@mui/material'
+import CloseRoundedIcon from '@mui/icons-material/CloseRounded'
 import {
   createNotification,
   deleteNotification,
@@ -39,6 +44,7 @@ import {
 } from '../../shared/api'
 
 type Notice = { type: 'success' | 'error'; text: string } | null
+type PreviewContent = { text: string; html: string }
 
 type NotificationForm = {
   name: string
@@ -103,7 +109,8 @@ export default function NotificationsSection() {
   const [editingId, setEditingId] = React.useState<number | null>(null)
   const [editForm, setEditForm] = React.useState<NotificationForm>(defaultForm)
   const [recipientDrafts, setRecipientDrafts] = React.useState<Record<number, { type: RecipientType; value: string }>>({})
-  const [previewById, setPreviewById] = React.useState<Record<number, string>>({})
+  const [previewById, setPreviewById] = React.useState<Record<number, PreviewContent>>({})
+  const [previewModalId, setPreviewModalId] = React.useState<number | null>(null)
 
   React.useEffect(() => {
     fetchRows()
@@ -247,13 +254,18 @@ export default function NotificationsSection() {
 
   async function loadPreview(notificationId: number) {
     setNotice(null)
+    setPreviewModalId(notificationId)
     try {
       const out = await previewNotification(notificationId)
       setPreviewById((prev) => ({
         ...prev,
-        [notificationId]: String(out?.body || ''),
+        [notificationId]: {
+          text: String(out?.body || ''),
+          html: String(out?.body_html || ''),
+        },
       }))
     } catch (error: any) {
+      setPreviewModalId(null)
       setNotice({ type: 'error', text: `Failed to load preview: ${error?.message || 'unknown error'}` })
     }
   }
@@ -713,28 +725,74 @@ export default function NotificationsSection() {
                     </Stack>
                   </Box>
 
-                  {previewById[row.id] ? (
-                    <Box sx={{ mt: 1 }}>
-                      <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 0.5 }}>Preview</Typography>
-                      <Box component="pre" sx={{
-                        m: 0,
-                        p: 1.5,
-                        borderRadius: 1,
-                        border: (theme) => `1px solid ${theme.palette.divider}`,
-                        bgcolor: (theme) => theme.palette.action.hover,
-                        whiteSpace: 'pre-wrap',
-                        fontFamily: 'monospace',
-                        fontSize: 12,
-                      }}>
-                        {previewById[row.id]}
-                      </Box>
-                    </Box>
-                  ) : null}
                 </Stack>
               </ListItem>
             )
           })}
         </List>
+
+        <Dialog
+          open={previewModalId != null}
+          onClose={() => setPreviewModalId(null)}
+          fullWidth
+          maxWidth="md"
+        >
+          <DialogTitle sx={{ pr: 6 }}>
+            Notification Preview
+            <IconButton
+              aria-label="close preview"
+              onClick={() => setPreviewModalId(null)}
+              sx={{ position: 'absolute', right: 8, top: 8 }}
+            >
+              <CloseRoundedIcon />
+            </IconButton>
+          </DialogTitle>
+          <DialogContent dividers>
+            {previewModalId != null && previewById[previewModalId] ? (
+              <Stack spacing={1.25}>
+                <Typography variant="caption" color="text.secondary">
+                  Email (HTML preview)
+                </Typography>
+                <Box
+                  sx={{
+                    borderRadius: 1,
+                    border: (theme) => `1px solid ${theme.palette.divider}`,
+                    bgcolor: '#fff',
+                    overflow: 'hidden',
+                  }}
+                >
+                  <iframe
+                    title={`notification-html-preview-modal-${previewModalId}`}
+                    srcDoc={previewById[previewModalId].html || '<p style="font-family:Arial,sans-serif;padding:12px;">No HTML preview available.</p>'}
+                    style={{
+                      width: '100%',
+                      minHeight: 420,
+                      border: 0,
+                      background: 'white',
+                    }}
+                  />
+                </Box>
+                <Typography variant="caption" color="text.secondary">
+                  Plain text (used for Telegram and text fallback)
+                </Typography>
+                <Box component="pre" sx={{
+                  m: 0,
+                  p: 1.5,
+                  borderRadius: 1,
+                  border: (theme) => `1px solid ${theme.palette.divider}`,
+                  bgcolor: (theme) => theme.palette.action.hover,
+                  whiteSpace: 'pre-wrap',
+                  fontFamily: 'monospace',
+                  fontSize: 12,
+                }}>
+                  {previewById[previewModalId].text}
+                </Box>
+              </Stack>
+            ) : (
+              <Typography color="text.secondary">Loading preview...</Typography>
+            )}
+          </DialogContent>
+        </Dialog>
       </CardContent>
     </Card>
   )

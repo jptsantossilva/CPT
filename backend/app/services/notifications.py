@@ -467,6 +467,7 @@ def _render_message(
     top_down: list[dict[str, Any]],
 ) -> tuple[str, str, str]:
     curr = "USD" if str(currency or "").upper() == "USD" else "EUR"
+    curr_symbol = "$" if curr == "USD" else "€"
     current_sync = _format_sync_timestamp(current_sync_ts)
     previous_sync = _format_sync_timestamp(previous_sync_ts)
     current_sync_short = _format_sync_timestamp_short(current_sync_ts)
@@ -481,31 +482,33 @@ def _render_message(
             delta_pct = (delta_abs / base) * 100.0
 
     lines = [
-        f"Portfolio: {current_total:,.2f} {curr}",
+        "Portfolio Update",
+        f"{curr_symbol}{current_total:,.2f}",
         (
-            f"Change: {delta_abs:+,.2f} {curr} ({delta_pct:+.2f}%)"
+            f"{'+' if delta_abs >= 0 else '-'}{curr_symbol}{abs(delta_abs):,.2f} "
+            f"{'▲' if delta_abs >= 0 else '▼'} {delta_pct:+.2f}%"
             if delta_abs is not None and delta_pct is not None
             else (
-                f"Change: {delta_abs:+,.2f} {curr} (n/a)"
+                f"{'+' if delta_abs >= 0 else '-'}{curr_symbol}{abs(delta_abs):,.2f} (n/a)"
                 if delta_abs is not None
-                else "Change: n/a (need at least 2 sync snapshots)"
+                else "n/a (need at least 2 sync snapshots)"
             )
         ),
-        f"Period: {previous_sync} -> {current_sync} ({sync_gap})",
+        f"{previous_sync_short} -> {current_sync_short} · {sync_gap}",
         "",
-        "Top 5 up:",
+        "Top 5 up",
     ]
     if not top_up:
         lines.append("- none")
     for idx, item in enumerate(top_up, start=1):
-        lines.append(f"{idx}. {item['asset_label']} {float(item['delta_pct']):+.2f}%")
+        lines.append(f"{idx}. {item['asset_label']} ▲ {float(item['delta_pct']):+.2f}%")
 
     lines.append("")
-    lines.append("Top 5 down:")
+    lines.append("Top 5 down")
     if not top_down:
         lines.append("- none")
     for idx, item in enumerate(top_down, start=1):
-        lines.append(f"{idx}. {item['asset_label']} {float(item['delta_pct']):+.2f}%")
+        lines.append(f"{idx}. {item['asset_label']} ▼ {float(item['delta_pct']):+.2f}%")
 
     body = "\n".join(lines)
 
@@ -513,34 +516,41 @@ def _render_message(
         return "#16a34a" if value >= 0 else "#dc2626"
 
     def _fmt_colored_pct(value: float) -> str:
-        return f"<span style=\"color:{_color_for(value)};font-weight:600;\">{value:+.2f}%</span>"
+        return f"<span style=\"color:{_color_for(value)};font-weight:600;font-size:15px;line-height:1.1;\">{value:+.2f}%</span>"
 
-    def _fmt_colored_amount(value: float, code: str) -> str:
-        return f"<span style=\"color:{_color_for(value)};font-weight:600;\">{value:+,.2f} {code}</span>"
+    def _fmt_colored_amount(value: float) -> str:
+        abs_value = abs(value)
+        sign = "+" if value >= 0 else "-"
+        return (
+            f"<span style=\"color:{_color_for(value)};font-weight:600;font-size:15px;line-height:1.1;\">"
+            f"{sign}{curr_symbol}{abs_value:,.2f}</span>"
+        )
 
     if delta_abs is None:
         variation_html = "Change: n/a (need at least 2 sync snapshots)"
     elif delta_pct is None:
-        variation_html = f"Change: {_fmt_colored_amount(delta_abs, curr)} <span style=\"opacity:.72;\">(n/a)</span>"
+        variation_html = f"Change: {_fmt_colored_amount(delta_abs)} <span style=\"opacity:.72;\">(n/a)</span>"
     else:
         variation_html = (
             "Change: "
-            f"{_fmt_colored_amount(delta_abs, curr)} {_fmt_colored_pct(delta_pct)}"
+            f"{_fmt_colored_amount(delta_abs)} {_fmt_colored_pct(delta_pct)}"
         )
 
     top_up_html = "".join(
-        f"<li>{escape(str(item.get('asset_label') or 'n/a'))} <span style=\"color:#15803d;font-weight:700;\">▲</span> "
+        f"<li>{escape(str(item.get('asset_label') or 'n/a'))} "
+        f"<span style=\"color:#15803d;font-weight:700;font-size:13px;line-height:1.2;\">▲</span> "
         f"{_fmt_colored_pct(float(item.get('delta_pct') or 0.0))}</li>"
         for item in top_up
     ) or "<li>none</li>"
     top_down_html = "".join(
-        f"<li>{escape(str(item.get('asset_label') or 'n/a'))} <span style=\"color:#b91c1c;font-weight:700;\">▼</span> "
+        f"<li>{escape(str(item.get('asset_label') or 'n/a'))} "
+        f"<span style=\"color:#b91c1c;font-weight:700;font-size:13px;line-height:1.2;\">▼</span> "
         f"{_fmt_colored_pct(float(item.get('delta_pct') or 0.0))}</li>"
         for item in top_down
     ) or "<li>none</li>"
 
     change_amount_html = (
-        _fmt_colored_amount(delta_abs, curr) if delta_abs is not None else "<span style=\"opacity:.72;\">n/a</span>"
+        _fmt_colored_amount(delta_abs) if delta_abs is not None else "<span style=\"opacity:.72;\">n/a</span>"
     )
     change_pct_html = (
         _fmt_colored_pct(delta_pct) if delta_pct is not None else "<span style=\"opacity:.72;\">n/a</span>"
@@ -554,15 +564,16 @@ def _render_message(
         "<table role=\"presentation\" cellspacing=\"0\" cellpadding=\"0\" style=\"border-collapse:collapse;width:auto;margin:0 0 4px 0;\">"
         "<tr>"
         "<td style=\"line-height:1.1;white-space:nowrap;vertical-align:bottom;\">"
-        f"<span style=\"font-size:22px;font-weight:700;\">{current_total:,.2f}</span>"
-        f"<span style=\"font-size:18px;font-weight:600;color:#374151;\"> {curr}</span>"
+        f"<span style=\"font-size:22px;font-weight:700;\">{curr_symbol}{current_total:,.2f}</span>"
         "</td>"
         "<td style=\"vertical-align:bottom;white-space:nowrap;padding-left:10px;\">"
-        f"<span style=\"font-size:16px;line-height:1.1;\">{change_amount_html}</span>"
+        "<span style=\"display:inline-flex;align-items:flex-end;gap:4px;\">"
+        f"{change_amount_html}"
         "<span style=\"display:inline-block;width:8px;\"></span>"
         f"<span style=\"color:{trend_color};font-weight:700;font-size:13px;line-height:1.2;\">{trend_arrow}</span>"
-        "<span style=\"display:inline-block;width:4px;\"></span>"
-        f"<span style=\"font-size:15px;line-height:1.1;\">{change_pct_html}</span>"
+        " "
+        f"{change_pct_html}"
+        "</span>"
         "</td>"
         "</tr>"
         "</table>"

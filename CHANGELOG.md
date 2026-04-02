@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 ## [2026.04.02]
 
 ### Changed
+- Split former `Admin` area into two sections:
+  - `Accounts` page for Binance Accounts + Wallets management only.
+  - `Sync & Notifications` page for `Automatic Sync Schedule` and `Portfolio Notifications`.
+- Improved Portfolio Notifications preview UX in Admin with a dedicated modal and clearer labels for HTML vs plain-text preview blocks.
+- Added a discreet app version indicator (`YYYY.MM.DD` from latest changelog date) in the sidebar.
 - Refined Portfolio Notifications scheduling: `Automatic Sync Schedule` now triggers only after new automatic sync snapshots (manual sync snapshots are ignored).
 - Improved notification analytics logic: comparison is based on latest vs previous sync snapshots, with better filtering for noisy/low-value movers.
 - Updated notification currency handling to follow app `USD/EUR` preference and send a single selected currency in messages.
