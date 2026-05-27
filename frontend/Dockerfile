@@ -6,6 +6,7 @@ COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 
 COPY frontend ./
+COPY CHANGELOG.md ../CHANGELOG.md
 
 ARG VITE_API_BASE=/api
 ENV VITE_API_BASE=${VITE_API_BASE}
