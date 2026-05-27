@@ -28,6 +28,7 @@ SYMBOL_ID_OVERRIDES: Dict[str, str] = {
     "GUN": "gunz",
     "GPS": "goplus-security",
     "ONE": "harmony",
+    "TON": "the-open-network",
     "XLM": "stellar",
     "XRP": "ripple",
     "TRX": "tron",

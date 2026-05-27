@@ -52,6 +52,23 @@ def test_fetch_prices_uses_symbol_override_for_xlm(monkeypatch):
     assert mp["XLM"]["price_usd"] == 0.15
 
 
+def test_fetch_prices_uses_symbol_override_for_ton(monkeypatch):
+    prices._price_cache.clear()
+    monkeypatch.setattr(prices, "_load_coin_list", lambda reload=False: {"ton": "some-wrong-ton-id"})
+    monkeypatch.setattr(
+        prices,
+        "_fetch_simple_price",
+        lambda ids: {
+            "the-open-network": {"eur": 1.75, "usd": 1.90},
+        },
+    )
+
+    mp = prices.fetch_prices(["TON"])
+
+    assert mp["TON"]["price_eur"] == 1.75
+    assert mp["TON"]["price_usd"] == 1.90
+
+
 def test_fetch_prices_uses_symbol_override_for_btc(monkeypatch):
     prices._price_cache.clear()
     monkeypatch.setattr(prices, "_load_coin_list", lambda reload=False: {"btc": "some-wrong-btc-id"})
