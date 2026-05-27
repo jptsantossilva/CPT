@@ -2,6 +2,7 @@ import React from 'react'
 import AccountBalanceWalletRoundedIcon from '@mui/icons-material/AccountBalanceWalletRounded'
 import AdminPanelSettingsRoundedIcon from '@mui/icons-material/AdminPanelSettingsRounded'
 import SettingsSuggestRoundedIcon from '@mui/icons-material/SettingsSuggestRounded'
+import TuneRoundedIcon from '@mui/icons-material/TuneRounded'
 import CollectionsRoundedIcon from '@mui/icons-material/CollectionsRounded'
 import DarkModeRoundedIcon from '@mui/icons-material/DarkModeRounded'
 import DashboardRoundedIcon from '@mui/icons-material/DashboardRounded'
@@ -19,12 +20,13 @@ import changelog from '../../CHANGELOG.md?raw'
 
 const AccountsPage = React.lazy(() => import('./pages/Admin'))
 const AutomationPage = React.lazy(() => import('./pages/Automation'))
+const SettingsPage = React.lazy(() => import('./pages/Settings'))
 type Theme = AppMode
 type CurrencyMode = 'EUR' | 'USD'
 const APP_VERSION = changelog.match(/^## \[(\d{4}\.\d{2}\.\d{2})\]/m)?.[1] ?? 'unknown'
 
 export default function App(){
-  const [route, setRoute] = React.useState<'dashboard'|'assets'|'nfts'|'accounts'|'automation'>('dashboard')
+  const [route, setRoute] = React.useState<'dashboard'|'assets'|'nfts'|'accounts'|'automation'|'settings'>('dashboard')
   const [theme, setTheme] = React.useState<Theme>(() => {
     const saved = window.localStorage.getItem('cpt_theme')
     if (saved === 'dark' || saved === 'light') return saved
@@ -39,12 +41,13 @@ export default function App(){
     const saved = window.localStorage.getItem('cpt_sidebar_collapsed')
     return saved === '1'
   })
-  const navItems: Array<{ key: 'dashboard' | 'assets' | 'nfts' | 'accounts' | 'automation'; label: string; icon: React.ReactNode }> = [
+  const navItems: Array<{ key: 'dashboard' | 'assets' | 'nfts' | 'accounts' | 'automation' | 'settings'; label: string; icon: React.ReactNode }> = [
     { key: 'dashboard', label: 'Dashboard', icon: <DashboardRoundedIcon fontSize="small" /> },
     { key: 'assets', label: 'Coins', icon: <PaidRoundedIcon fontSize="small" /> },
     { key: 'nfts', label: 'NFTs', icon: <CollectionsRoundedIcon fontSize="small" /> },
     { key: 'accounts', label: 'Accounts', icon: <AdminPanelSettingsRoundedIcon fontSize="small" /> },
     { key: 'automation', label: 'Sync & Notifications', icon: <SettingsSuggestRoundedIcon fontSize="small" /> },
+    { key: 'settings', label: 'Settings', icon: <TuneRoundedIcon fontSize="small" /> },
   ]
   const themeObj = React.useMemo(() => buildTheme(theme), [theme])
   const activeNav = navItems.find((item) => item.key === route)
@@ -269,6 +272,11 @@ export default function App(){
                 {route === 'automation' ? (
                   <React.Suspense fallback={<Typography color="text.secondary">Loading Sync & Notifications...</Typography>}>
                     <AutomationPage />
+                  </React.Suspense>
+                ) : null}
+                {route === 'settings' ? (
+                  <React.Suspense fallback={<Typography color="text.secondary">Loading Settings...</Typography>}>
+                    <SettingsPage />
                   </React.Suspense>
                 ) : null}
               </Box>

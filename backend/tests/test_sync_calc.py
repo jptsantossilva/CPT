@@ -2,6 +2,7 @@ from backend.app.services import prices
 
 
 def test_fetch_prices_basic_with_monkeypatched_sources(monkeypatch):
+    monkeypatch.setattr(prices, "_load_symbol_mappings", lambda reload=False: {})
     monkeypatch.setattr(prices, "_load_coin_list", lambda reload=False: {"btc": "bitcoin", "eth": "ethereum"})
     monkeypatch.setattr(
         prices,
@@ -21,6 +22,8 @@ def test_fetch_prices_basic_with_monkeypatched_sources(monkeypatch):
 
 
 def test_fetch_prices_uses_symbol_override_for_one(monkeypatch):
+    prices._price_cache.clear()
+    monkeypatch.setattr(prices, "_load_symbol_mappings", lambda reload=False: {"ONE": "harmony"})
     monkeypatch.setattr(prices, "_load_coin_list", lambda reload=False: {"one": "some-wrong-one-id"})
     monkeypatch.setattr(
         prices,
@@ -37,6 +40,8 @@ def test_fetch_prices_uses_symbol_override_for_one(monkeypatch):
 
 
 def test_fetch_prices_uses_symbol_override_for_xlm(monkeypatch):
+    prices._price_cache.clear()
+    monkeypatch.setattr(prices, "_load_symbol_mappings", lambda reload=False: {"XLM": "stellar"})
     monkeypatch.setattr(prices, "_load_coin_list", lambda reload=False: {"xlm": "some-wrong-xlm-id"})
     monkeypatch.setattr(
         prices,
@@ -54,6 +59,7 @@ def test_fetch_prices_uses_symbol_override_for_xlm(monkeypatch):
 
 def test_fetch_prices_uses_symbol_override_for_ton(monkeypatch):
     prices._price_cache.clear()
+    monkeypatch.setattr(prices, "_load_symbol_mappings", lambda reload=False: {"TON": "the-open-network"})
     monkeypatch.setattr(prices, "_load_coin_list", lambda reload=False: {"ton": "some-wrong-ton-id"})
     monkeypatch.setattr(
         prices,
@@ -71,6 +77,7 @@ def test_fetch_prices_uses_symbol_override_for_ton(monkeypatch):
 
 def test_fetch_prices_uses_symbol_override_for_btc(monkeypatch):
     prices._price_cache.clear()
+    monkeypatch.setattr(prices, "_load_symbol_mappings", lambda reload=False: {"BTC": "bitcoin"})
     monkeypatch.setattr(prices, "_load_coin_list", lambda reload=False: {"btc": "some-wrong-btc-id"})
     monkeypatch.setattr(
         prices,
@@ -88,6 +95,7 @@ def test_fetch_prices_uses_symbol_override_for_btc(monkeypatch):
 
 def test_fetch_icon_urls_uses_overrides_for_gun_and_gps(monkeypatch):
     prices._icon_cache.clear()
+    monkeypatch.setattr(prices, "_load_symbol_mappings", lambda reload=False: {"GUN": "gunz", "GPS": "goplus-security"})
     monkeypatch.setattr(prices, "_load_coin_list", lambda reload=False: {})
     monkeypatch.setattr(
         prices,

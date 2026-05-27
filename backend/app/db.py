@@ -4,17 +4,54 @@ from sqlalchemy import inspect, text
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from .config import settings
-from .models import Account, AppSetting, Holding, NFTBlacklist, NFTHolding, Price, Snapshot
+from .models import Account, AppSetting, Holding, NFTBlacklist, NFTHolding, Price, PriceSymbolMapping, Snapshot
 from .wallet_chains import parse_wallet_identifier
 
 DB_URL = os.getenv("DATABASE_URL") or settings.DATABASE_URL
 engine = create_engine(DB_URL, echo=False)
+
+DEFAULT_PRICE_SYMBOL_MAPPINGS: dict[str, dict[str, str]] = {
+    "BTC": {"provider_id": "bitcoin", "label": "Bitcoin"},
+    "GUN": {"provider_id": "gunz", "label": "Gunz"},
+    "GPS": {"provider_id": "goplus-security", "label": "GoPlus Security"},
+    "ONE": {"provider_id": "harmony", "label": "Harmony"},
+    "TON": {"provider_id": "the-open-network", "label": "Toncoin"},
+    "XLM": {"provider_id": "stellar", "label": "Stellar"},
+    "XRP": {"provider_id": "ripple", "label": "XRP"},
+    "TRX": {"provider_id": "tron", "label": "TRON"},
+}
 
 
 def init_db():
     SQLModel.metadata.create_all(engine)
     _ensure_nft_holding_columns()
     _ensure_notification_anchor_columns()
+    seed_default_price_symbol_mappings()
+
+
+def seed_default_price_symbol_mappings() -> None:
+    """Insert default provider mappings without overwriting user changes."""
+    try:
+        with get_session() as s:
+            changed = False
+            for symbol, data in DEFAULT_PRICE_SYMBOL_MAPPINGS.items():
+                existing = s.get(PriceSymbolMapping, symbol)
+                if existing:
+                    continue
+                s.add(
+                    PriceSymbolMapping(
+                        symbol=symbol,
+                        provider="coingecko",
+                        provider_id=data["provider_id"],
+                        label=data.get("label"),
+                        enabled=True,
+                    )
+                )
+                changed = True
+            if changed:
+                s.commit()
+    except Exception:
+        return
 
 
 def _ensure_nft_holding_columns() -> None:

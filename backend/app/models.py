@@ -31,6 +31,16 @@ class Price(SQLModel, table=True):
     ts: datetime = Field(default_factory=datetime.utcnow)
 
 
+class PriceSymbolMapping(SQLModel, table=True):
+    symbol: str = Field(primary_key=True)
+    provider: str = "coingecko"
+    provider_id: str
+    label: Optional[str] = None
+    enabled: bool = True
+    notes: Optional[str] = None
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class Snapshot(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     timestamp: datetime = Field(default_factory=datetime.utcnow)

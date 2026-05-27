@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from sqlmodel import select
 
 from . import db, services
-from .api import binance_accounts, notifications, sync_schedule, wallets
+from .api import binance_accounts, notifications, price_mappings, sync_schedule, wallets
 from .models import Snapshot
 
 app = FastAPI(title="Crypto Portfolio Tracker")
@@ -141,3 +141,4 @@ app.include_router(binance_accounts.router)
 app.include_router(wallets.router)
 app.include_router(sync_schedule.router)
 app.include_router(notifications.router)
+app.include_router(price_mappings.router)

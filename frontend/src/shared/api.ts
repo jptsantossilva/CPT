@@ -26,6 +26,16 @@ export type CurrencySetting = {
   currency: 'EUR' | 'USD'
 }
 
+export type PriceSymbolMapping = {
+  symbol: string
+  provider: string
+  provider_id: string
+  label?: string | null
+  enabled: boolean
+  notes?: string | null
+  updated_at?: string | null
+}
+
 export type NotificationChannel = 'email' | 'telegram'
 export type RecipientType = 'email' | 'telegram_chat'
 export type ScheduleMode = 'inherit' | 'custom'
@@ -211,6 +221,22 @@ export async function fetchCurrencySetting() {
 
 export async function updateCurrencySetting(currency: 'EUR' | 'USD') {
   return apiPut<CurrencySetting>('/settings/currency', { currency })
+}
+
+export async function listPriceSymbolMappings() {
+  return apiGet<PriceSymbolMapping[]>('/admin/price-mappings/')
+}
+
+export async function createPriceSymbolMapping(payload: Partial<PriceSymbolMapping>) {
+  return apiPost<PriceSymbolMapping>('/admin/price-mappings/', payload)
+}
+
+export async function updatePriceSymbolMapping(symbol: string, payload: Partial<PriceSymbolMapping>) {
+  return apiPut<PriceSymbolMapping>(`/admin/price-mappings/${encodeURIComponent(symbol)}`, payload)
+}
+
+export async function deletePriceSymbolMapping(symbol: string) {
+  return apiDelete<{ status: string }>(`/admin/price-mappings/${encodeURIComponent(symbol)}`)
 }
 
 export async function fetchPortfolioHistory(limit = 800) {

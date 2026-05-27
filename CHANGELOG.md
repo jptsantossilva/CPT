@@ -9,6 +9,7 @@ All notable changes to this project will be documented in this file.
 - Added a CPT-specific `AGENTS.md` guide adapted from the BEC project context.
 - Changed the sidebar app version indicator to derive from the latest dated `CHANGELOG.md` entry instead of a hardcoded frontend constant.
 - Fixed the frontend Docker build by copying the root `CHANGELOG.md` into the build image.
+- Replaced hardcoded CoinGecko symbol overrides with DB-managed price mappings seeded from the previous defaults and added a Settings page to manage them.
 
 ## [2026.04.02]
 

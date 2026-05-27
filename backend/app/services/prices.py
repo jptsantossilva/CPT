@@ -16,27 +16,22 @@ import time
 from typing import Dict, List
 
 import httpx
+from sqlmodel import select
+
+from ..db import get_session
+from ..models import PriceSymbolMapping
 
 log = logging.getLogger(__name__)
 
 COINGECKO_BASE = os.getenv("COINGECKO_API_BASE", "https://api.coingecko.com/api/v3")
 
-# Symbol overrides for ambiguous CoinGecko symbols.
-# Example: ONE should resolve to Harmony.
-SYMBOL_ID_OVERRIDES: Dict[str, str] = {
-    "BTC": "bitcoin",
-    "GUN": "gunz",
-    "GPS": "goplus-security",
-    "ONE": "harmony",
-    "TON": "the-open-network",
-    "XLM": "stellar",
-    "XRP": "ripple",
-    "TRX": "tron",
-}
-
 # Cache for coin list (symbol -> coin id)
 _coin_list_cache: Dict[str, int | dict] = {"ts": 0, "data": {}}
 _COIN_LIST_TTL = 24 * 3600
+
+# Cache for DB-managed symbol mappings (symbol -> CoinGecko id)
+_symbol_mapping_cache: Dict[str, int | dict] = {"ts": 0, "data": {}}
+_SYMBOL_MAPPING_TTL = 60
 
 # Price cache: symbol -> {ts, data}
 _price_cache: Dict[str, dict] = {}
@@ -84,8 +79,51 @@ def _load_coin_list(reload: bool = False) -> Dict[str, str]:
     return mapping
 
 
+def clear_symbol_mapping_cache(symbol: str | None = None) -> None:
+    """Clear mapping-dependent caches after admin mapping changes."""
+    _symbol_mapping_cache["ts"] = 0
+    _symbol_mapping_cache["data"] = {}
+    if symbol:
+        key = symbol.upper()
+        _price_cache.pop(key, None)
+        _icon_cache.pop(key, None)
+        return
+    _price_cache.clear()
+    _icon_cache.clear()
+
+
+def _load_symbol_mappings(reload: bool = False) -> Dict[str, str]:
+    if (
+        not reload
+        and _now() - _symbol_mapping_cache["ts"] < _SYMBOL_MAPPING_TTL
+        and _symbol_mapping_cache["data"]
+    ):
+        return _symbol_mapping_cache["data"]
+
+    try:
+        with get_session() as s:
+            rows = s.exec(
+                select(PriceSymbolMapping).where(
+                    PriceSymbolMapping.provider == "coingecko",
+                    PriceSymbolMapping.enabled == True,  # noqa: E712
+                )
+            ).all()
+    except Exception as e:
+        log.warning("failed to load price symbol mappings from DB: %s", e)
+        return _symbol_mapping_cache["data"]
+
+    mapping = {
+        str(row.symbol or "").upper(): str(row.provider_id or "").strip()
+        for row in rows
+        if str(row.symbol or "").strip() and str(row.provider_id or "").strip()
+    }
+    _symbol_mapping_cache["ts"] = _now()
+    _symbol_mapping_cache["data"] = mapping
+    return mapping
+
+
 def _symbol_to_id(symbol: str) -> str | None:
-    override = SYMBOL_ID_OVERRIDES.get(symbol.upper())
+    override = _load_symbol_mappings().get(symbol.upper())
     if override:
         return override
     mapping = _load_coin_list()
