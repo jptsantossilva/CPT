@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 - Fixed Toncoin valuation by mapping `TON` explicitly to CoinGecko's `the-open-network` asset id.
 - Added a CPT-specific `AGENTS.md` guide adapted from the BEC project context.
+- Changed the sidebar app version indicator to derive from the latest dated `CHANGELOG.md` entry instead of a hardcoded frontend constant.
 
 ## [2026.04.02]
 

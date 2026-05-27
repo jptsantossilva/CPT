@@ -15,12 +15,13 @@ import Dashboard from './pages/Dashboard'
 import Nfts from './pages/Nfts'
 import { updateCurrencySetting } from './shared/api'
 import { buildTheme, type AppMode } from './theme'
+import changelog from '../../CHANGELOG.md?raw'
 
 const AccountsPage = React.lazy(() => import('./pages/Admin'))
 const AutomationPage = React.lazy(() => import('./pages/Automation'))
 type Theme = AppMode
 type CurrencyMode = 'EUR' | 'USD'
-const APP_VERSION = '2026.04.02'
+const APP_VERSION = changelog.match(/^## \[(\d{4}\.\d{2}\.\d{2})\]/m)?.[1] ?? 'unknown'
 
 export default function App(){
   const [route, setRoute] = React.useState<'dashboard'|'assets'|'nfts'|'accounts'|'automation'>('dashboard')
