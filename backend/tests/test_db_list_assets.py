@@ -121,14 +121,23 @@ def test_identity_column_migrations_upgrade_legacy_tables(monkeypatch, tmp_path)
                 "price_usd FLOAT, ts DATETIME NOT NULL)"
             )
         )
+        connection.execute(
+            text(
+                "CREATE TABLE snapshot ("
+                "id INTEGER PRIMARY KEY, timestamp DATETIME NOT NULL, total_eur FLOAT NOT NULL, "
+                "total_usd FLOAT, meta VARCHAR)"
+            )
+        )
     monkeypatch.setattr(db, "engine", engine)
 
     db._ensure_holding_identity_columns()
     db._ensure_price_identity_columns()
+    db._ensure_snapshot_validity_columns()
 
     inspector = inspect(engine)
     holding_columns = {column["name"] for column in inspector.get_columns("holding")}
     price_columns = {column["name"] for column in inspector.get_columns("price")}
+    snapshot_columns = {column["name"] for column in inspector.get_columns("snapshot")}
     assert {
         "asset_key",
         "price_key",
@@ -138,3 +147,4 @@ def test_identity_column_migrations_upgrade_legacy_tables(monkeypatch, tmp_path)
         "risk_reason",
     }.issubset(holding_columns)
     assert "price_key" in price_columns
+    assert {"is_valid", "invalid_reason", "invalidated_at"}.issubset(snapshot_columns)

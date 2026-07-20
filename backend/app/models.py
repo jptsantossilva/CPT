@@ -56,6 +56,9 @@ class Snapshot(SQLModel, table=True):
     total_eur: float
     total_usd: Optional[float] = None
     meta: Optional[str] = None
+    is_valid: bool = True
+    invalid_reason: Optional[str] = None
+    invalidated_at: Optional[datetime] = None
 
 
 class NFTCollection(SQLModel, table=True):

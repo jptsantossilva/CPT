@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from sqlmodel import select
 
 from . import db, services
-from .api import binance_accounts, notifications, price_mappings, sync_schedule, wallets
+from .api import binance_accounts, notifications, price_mappings, snapshots, sync_schedule, wallets
 from .models import Snapshot
 
 app = FastAPI(title="Crypto Portfolio Tracker")
@@ -67,14 +67,21 @@ def latest_snapshot():
 def snapshot_history(limit: int = 400):
     n = max(1, min(int(limit or 400), 5000))
     with db.get_session() as s:
-        rows = s.exec(select(Snapshot).order_by(Snapshot.timestamp.asc()).limit(n)).all()
+        rows = s.exec(
+            select(Snapshot)
+            .where(Snapshot.is_valid == True)  # noqa: E712
+            .order_by(Snapshot.timestamp.asc())
+            .limit(n)
+        ).all()
     return rows
 
 
 @app.get("/snapshot/variations")
 def snapshot_variations():
     with db.get_session() as s:
-        rows = s.exec(select(Snapshot).order_by(Snapshot.timestamp.asc())).all()
+        rows = s.exec(
+            select(Snapshot).where(Snapshot.is_valid == True).order_by(Snapshot.timestamp.asc())  # noqa: E712
+        ).all()
     return services.history.compute_variations(rows)
 
 
@@ -82,7 +89,12 @@ def snapshot_variations():
 def portfolio_history(limit: int = 800):
     n = max(1, min(int(limit or 800), 5000))
     with db.get_session() as s:
-        rows = s.exec(select(Snapshot).order_by(Snapshot.timestamp.asc()).limit(n)).all()
+        rows = s.exec(
+            select(Snapshot)
+            .where(Snapshot.is_valid == True)  # noqa: E712
+            .order_by(Snapshot.timestamp.asc())
+            .limit(n)
+        ).all()
     return services.history.build_portfolio_history(rows)
 
 
@@ -142,3 +154,4 @@ app.include_router(wallets.router)
 app.include_router(sync_schedule.router)
 app.include_router(notifications.router)
 app.include_router(price_mappings.router)
+app.include_router(snapshots.router)

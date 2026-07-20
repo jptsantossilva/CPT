@@ -26,6 +26,7 @@ def init_db():
     SQLModel.metadata.create_all(engine)
     _ensure_holding_identity_columns()
     _ensure_price_identity_columns()
+    _ensure_snapshot_validity_columns()
     _ensure_nft_holding_columns()
     _ensure_notification_anchor_columns()
     seed_default_price_symbol_mappings()
@@ -64,6 +65,26 @@ def _ensure_price_identity_columns() -> None:
         if "price_key" not in existing:
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE price ADD COLUMN price_key VARCHAR"))
+    except Exception:
+        return
+
+
+def _ensure_snapshot_validity_columns() -> None:
+    """Best-effort compatibility for reversible snapshot quarantine."""
+    try:
+        insp = inspect(engine)
+        if "snapshot" not in insp.get_table_names():
+            return
+        existing = {str(c.get("name")) for c in insp.get_columns("snapshot")}
+        columns = {
+            "is_valid": "BOOLEAN DEFAULT TRUE",
+            "invalid_reason": "VARCHAR",
+            "invalidated_at": "DATETIME",
+        }
+        with engine.begin() as conn:
+            for name, sql_type in columns.items():
+                if name not in existing:
+                    conn.execute(text(f"ALTER TABLE snapshot ADD COLUMN {name} {sql_type}"))
     except Exception:
         return
 
@@ -142,7 +163,7 @@ def get_session():
 
 def get_latest_snapshot():
     with get_session() as s:
-        q = select(Snapshot).order_by(Snapshot.timestamp.desc()).limit(1)
+        q = select(Snapshot).where(Snapshot.is_valid == True).order_by(Snapshot.timestamp.desc()).limit(1)  # noqa: E712
         res = s.exec(q).first()
         return res
 

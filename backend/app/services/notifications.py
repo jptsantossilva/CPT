@@ -341,7 +341,12 @@ def _extract_sync_snapshot_data(snapshot: Snapshot | None) -> tuple[dict[str, fl
 
 def _load_latest_sync_pair() -> tuple[Snapshot | None, Snapshot | None]:
     with db.get_session() as s:
-        rows = s.exec(select(Snapshot).order_by(Snapshot.timestamp.desc()).limit(2)).all()
+        rows = s.exec(
+            select(Snapshot)
+            .where(Snapshot.is_valid == True)  # noqa: E712
+            .order_by(Snapshot.timestamp.desc())
+            .limit(2)
+        ).all()
     if not rows:
         return None, None
     current = rows[0]

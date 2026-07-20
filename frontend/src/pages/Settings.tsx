@@ -4,16 +4,23 @@ import CloseRoundedIcon from '@mui/icons-material/CloseRounded'
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
 import EditRoundedIcon from '@mui/icons-material/EditRounded'
 import SaveRoundedIcon from '@mui/icons-material/SaveRounded'
-import { Alert, Box, Button, Card, CardContent, Checkbox, Grid, IconButton, Stack, Table, TableBody, TableCell, TableHead, TableRow, TextField, Tooltip, Typography } from '@mui/material'
+import { Alert, Box, Button, ButtonGroup, Card, CardContent, Checkbox, Chip, Grid, IconButton, Stack, Table, TableBody, TableCell, TableHead, TableRow, TextField, Tooltip, Typography } from '@mui/material'
 import {
+  auditSnapshotHistory,
   createPriceSymbolMapping,
   deletePriceSymbolMapping,
+  listSnapshotHistory,
   listPriceSymbolMappings,
   type PriceSymbolMapping,
+  type SnapshotAdminRow,
+  type SnapshotAuditResult,
+  updateSnapshotValidity,
   updatePriceSymbolMapping,
 } from '../shared/api'
+import { formatEur, formatUsd } from '../shared/format'
 
 type Notice = { type: 'success' | 'error'; text: string } | null
+type SnapshotFilter = 'all' | 'valid' | 'invalid'
 type MappingForm = {
   symbol: string
   provider_id: string
@@ -57,10 +64,18 @@ export default function Settings() {
   const [newMapping, setNewMapping] = React.useState<MappingForm>(EMPTY_FORM)
   const [editingSymbol, setEditingSymbol] = React.useState<string | null>(null)
   const [editingMapping, setEditingMapping] = React.useState<MappingForm>(EMPTY_FORM)
+  const [snapshots, setSnapshots] = React.useState<SnapshotAdminRow[]>([])
+  const [snapshotFilter, setSnapshotFilter] = React.useState<SnapshotFilter>('all')
+  const [snapshotLoading, setSnapshotLoading] = React.useState(false)
+  const [snapshotAudit, setSnapshotAudit] = React.useState<SnapshotAuditResult | null>(null)
 
   React.useEffect(() => {
     fetchMappings()
   }, [])
+
+  React.useEffect(() => {
+    fetchSnapshots(snapshotFilter)
+  }, [snapshotFilter])
 
   async function fetchMappings() {
     setLoading(true)
@@ -72,6 +87,100 @@ export default function Settings() {
       setLoading(false)
     }
   }
+
+  async function fetchSnapshots(status: SnapshotFilter = snapshotFilter) {
+    setSnapshotLoading(true)
+    try {
+      setSnapshots(await listSnapshotHistory(status))
+    } catch (error: any) {
+      setNotice({ type: 'error', text: `Failed to load snapshot history: ${error?.message || 'unknown error'}` })
+    } finally {
+      setSnapshotLoading(false)
+    }
+  }
+
+  async function runSnapshotAudit() {
+    setSnapshotLoading(true)
+    setNotice(null)
+    try {
+      const result = await auditSnapshotHistory()
+      setSnapshotAudit(result)
+      if (snapshotFilter !== 'all') setSnapshotFilter('all')
+      else await fetchSnapshots('all')
+      setNotice({
+        type: 'success',
+        text: result.candidate_count > 0
+          ? `Audit completed: ${result.candidate_count} candidate snapshot(s) found. No data was changed.`
+          : `Audit completed: ${result.scanned} snapshot(s) checked and no anomalies found.`,
+      })
+    } catch (error: any) {
+      setNotice({ type: 'error', text: `Snapshot audit failed: ${error?.message || 'unknown error'}` })
+    } finally {
+      setSnapshotLoading(false)
+    }
+  }
+
+  async function markSnapshotInvalid(row: SnapshotAdminRow) {
+    const suggested = candidateById.get(row.id)?.anomaly?.suggested_reason || 'manual_review'
+    const reason = window.prompt('Reason for marking this snapshot invalid:', suggested)
+    if (reason === null) return
+    setSnapshotLoading(true)
+    setNotice(null)
+    try {
+      await updateSnapshotValidity(row.id, false, reason.trim() || suggested)
+      setSnapshotAudit((previous) => {
+        if (!previous) return previous
+        const candidates = previous.candidates.filter((candidate) => candidate.id !== row.id)
+        return { ...previous, candidates, candidate_count: candidates.length }
+      })
+      await fetchSnapshots(snapshotFilter)
+      setNotice({ type: 'success', text: 'Snapshot marked invalid and removed from portfolio history.' })
+    } catch (error: any) {
+      setNotice({ type: 'error', text: `Failed to update snapshot: ${error?.message || 'unknown error'}` })
+    } finally {
+      setSnapshotLoading(false)
+    }
+  }
+
+  async function restoreSnapshot(row: SnapshotAdminRow) {
+    if (!window.confirm(`Restore snapshot ${new Date(row.timestamp).toLocaleString()} to portfolio history?`)) return
+    setSnapshotLoading(true)
+    setNotice(null)
+    try {
+      await updateSnapshotValidity(row.id, true)
+      await fetchSnapshots(snapshotFilter)
+      setNotice({ type: 'success', text: 'Snapshot restored to portfolio history.' })
+    } catch (error: any) {
+      setNotice({ type: 'error', text: `Failed to restore snapshot: ${error?.message || 'unknown error'}` })
+    } finally {
+      setSnapshotLoading(false)
+    }
+  }
+
+  async function quarantineAuditCandidates() {
+    const candidates = snapshotAudit?.candidates.filter((row) => row.is_valid) || []
+    if (candidates.length === 0) return
+    if (!window.confirm(`Mark ${candidates.length} detected snapshot(s) invalid? This is reversible.`)) return
+    setSnapshotLoading(true)
+    setNotice(null)
+    try {
+      for (const row of candidates) {
+        await updateSnapshotValidity(row.id, false, row.anomaly?.suggested_reason || 'audit_anomaly')
+      }
+      setSnapshotAudit(null)
+      await fetchSnapshots(snapshotFilter)
+      setNotice({ type: 'success', text: `${candidates.length} snapshot(s) moved to quarantine.` })
+    } catch (error: any) {
+      setNotice({ type: 'error', text: `Failed to quarantine snapshots: ${error?.message || 'unknown error'}` })
+    } finally {
+      setSnapshotLoading(false)
+    }
+  }
+
+  const candidateById = React.useMemo(
+    () => new Map((snapshotAudit?.candidates || []).map((row) => [row.id, row])),
+    [snapshotAudit]
+  )
 
   async function addMapping(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()
@@ -181,6 +290,103 @@ export default function Settings() {
   return (
     <Stack spacing={2}>
       {notice ? <Alert severity={notice.type}>{notice.text}</Alert> : null}
+
+      <Card variant="outlined">
+        <CardContent>
+          <Stack spacing={2}>
+            <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={1.5}>
+              <Box>
+                <Typography variant="h6">Snapshot History</Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Review portfolio snapshots and quarantine invalid points without deleting them.
+                </Typography>
+              </Box>
+              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
+                <Button variant="outlined" onClick={runSnapshotAudit} disabled={snapshotLoading}>
+                  Run audit
+                </Button>
+                {snapshotAudit && snapshotAudit.candidate_count > 0 ? (
+                  <Button color="warning" variant="contained" onClick={quarantineAuditCandidates} disabled={snapshotLoading}>
+                    Quarantine detected ({snapshotAudit.candidate_count})
+                  </Button>
+                ) : null}
+              </Stack>
+            </Stack>
+
+            <ButtonGroup size="small" aria-label="Snapshot status filter">
+              {(['all', 'valid', 'invalid'] as SnapshotFilter[]).map((status) => (
+                <Button
+                  key={status}
+                  variant={snapshotFilter === status ? 'contained' : 'outlined'}
+                  onClick={() => setSnapshotFilter(status)}
+                >
+                  {status === 'all' ? 'All' : status === 'valid' ? 'Valid' : 'Invalid'}
+                </Button>
+              ))}
+            </ButtonGroup>
+
+            <Box sx={{ overflowX: 'auto' }}>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Date</TableCell>
+                    <TableCell>Total EUR</TableCell>
+                    <TableCell>Total USD</TableCell>
+                    <TableCell>Status</TableCell>
+                    <TableCell>Reason / Audit</TableCell>
+                    <TableCell align="right">Actions</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {snapshots.map((row) => {
+                    const candidate = candidateById.get(row.id)
+                    return (
+                      <TableRow key={row.id} sx={candidate ? { bgcolor: 'warning.light' } : undefined}>
+                        <TableCell>{new Date(row.timestamp).toLocaleString()}</TableCell>
+                        <TableCell>{formatEur(Number(row.total_eur || 0))}</TableCell>
+                        <TableCell>{formatUsd(Number(row.total_usd || 0))}</TableCell>
+                        <TableCell>
+                          <Chip
+                            size="small"
+                            color={row.is_valid ? (candidate ? 'warning' : 'success') : 'error'}
+                            variant="outlined"
+                            label={row.is_valid ? (candidate ? 'Candidate' : 'Valid') : 'Invalid'}
+                          />
+                        </TableCell>
+                        <TableCell>
+                          {row.invalid_reason
+                            || candidate?.anomaly?.detected_reasons.join(', ')
+                            || '-'}
+                        </TableCell>
+                        <TableCell align="right">
+                          {row.is_valid ? (
+                            <Button size="small" color="warning" onClick={() => markSnapshotInvalid(row)} disabled={snapshotLoading}>
+                              Mark invalid
+                            </Button>
+                          ) : (
+                            <Button size="small" onClick={() => restoreSnapshot(row)} disabled={snapshotLoading}>
+                              Restore
+                            </Button>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    )
+                  })}
+                  {snapshots.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={6}>
+                        <Typography color="text.secondary">
+                          {snapshotLoading ? 'Loading snapshots…' : 'No snapshots found for this filter.'}
+                        </Typography>
+                      </TableCell>
+                    </TableRow>
+                  ) : null}
+                </TableBody>
+              </Table>
+            </Box>
+          </Stack>
+        </CardContent>
+      </Card>
 
       <Card variant="outlined">
         <CardContent>

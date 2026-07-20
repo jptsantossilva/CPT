@@ -36,6 +36,29 @@ export type PriceSymbolMapping = {
   updated_at?: string | null
 }
 
+export type SnapshotAnomaly = {
+  detected_reasons: string[]
+  suggested_reason: string
+  eth_quantity: number
+}
+
+export type SnapshotAdminRow = {
+  id: number
+  timestamp: string
+  total_eur: number
+  total_usd: number
+  is_valid: boolean
+  invalid_reason?: string | null
+  invalidated_at?: string | null
+  anomaly?: SnapshotAnomaly | null
+}
+
+export type SnapshotAuditResult = {
+  scanned: number
+  candidate_count: number
+  candidates: SnapshotAdminRow[]
+}
+
 export type NotificationChannel = 'email' | 'telegram'
 export type RecipientType = 'email' | 'telegram_chat'
 export type ScheduleMode = 'inherit' | 'custom'
@@ -237,6 +260,23 @@ export async function updatePriceSymbolMapping(symbol: string, payload: Partial<
 
 export async function deletePriceSymbolMapping(symbol: string) {
   return apiDelete<{ status: string }>(`/admin/price-mappings/${encodeURIComponent(symbol)}`)
+}
+
+export async function listSnapshotHistory(status: 'all' | 'valid' | 'invalid' = 'all', limit = 500) {
+  return apiGet<SnapshotAdminRow[]>(
+    `/admin/snapshots/?status=${encodeURIComponent(status)}&limit=${encodeURIComponent(String(limit))}`
+  )
+}
+
+export async function auditSnapshotHistory() {
+  return apiPost<SnapshotAuditResult>('/admin/snapshots/audit')
+}
+
+export async function updateSnapshotValidity(snapshotId: number, isValid: boolean, reason?: string | null) {
+  return apiPut<SnapshotAdminRow>(`/admin/snapshots/${snapshotId}/validity`, {
+    is_valid: isValid,
+    reason: reason || null,
+  })
 }
 
 export async function fetchPortfolioHistory(limit = 800) {
