@@ -1,5 +1,5 @@
 import React from 'react'
-import { Box, Card, CardContent, Checkbox, Chip, FormControlLabel, Stack, Table, TableBody, TableCell, TableHead, TableRow, TableSortLabel, TextField, Typography } from '@mui/material'
+import { Box, Card, CardContent, Checkbox, Chip, FormControlLabel, Stack, Table, TableBody, TableCell, TableHead, TableRow, TableSortLabel, TextField, Tooltip, Typography } from '@mui/material'
 import { fetchAssetIcons, fetchAssets } from '../shared/api'
 import { formatEur, formatUsd } from '../shared/format'
 
@@ -33,6 +33,12 @@ function unitPriceSortValue(a: any): number {
   const eur = Number(a.price_eur || 0)
   if (eur > 0) return eur
   return 0
+}
+
+function shortContract(value: unknown): string {
+  const contract = String(value || '')
+  if (contract.length <= 18) return contract
+  return `${contract.slice(0, 10)}…${contract.slice(-6)}`
 }
 
 function AssetIcon({ symbol, iconUrl, size = 18 }: { symbol: string; iconUrl?: string; size?: number }) {
@@ -110,13 +116,19 @@ export default function Assets() {
   const [selectedAccountIds, setSelectedAccountIds] = React.useState<number[]>([])
   const [selectedChains, setSelectedChains] = React.useState<string[]>([])
   const [hideLowValue, setHideLowValue] = React.useState(true)
+  const [showSuspicious, setShowSuspicious] = React.useState(false)
 
   React.useEffect(() => {
-    fetchAssets().then(setAssets).catch(() => {})
-  }, [])
+    fetchAssets(showSuspicious).then(setAssets).catch(() => {})
+  }, [showSuspicious])
 
   React.useEffect(() => {
-    const symbols = Array.from(new Set(assets.map((a) => String(a.asset_symbol || '').toUpperCase()).filter(Boolean)))
+    const symbols = Array.from(new Set(
+      assets
+        .filter((a) => String(a.visibility || 'visible').toLowerCase() !== 'hidden')
+        .map((a) => String(a.asset_symbol || '').toUpperCase())
+        .filter(Boolean)
+    ))
     if (symbols.length === 0) {
       setAssetIcons({})
       return
@@ -207,9 +219,12 @@ export default function Assets() {
   }
 
   const filtered = assets.filter((a) => {
-    const nameOk = String(a.asset_symbol || '').toLowerCase().includes(search.trim().toLowerCase())
+    const query = search.trim().toLowerCase()
+    const nameOk = String(a.asset_symbol || '').toLowerCase().includes(query)
+      || String(a.contract_address || '').toLowerCase().includes(query)
     if (!nameOk) return false
-    if (hideLowValue && Number(a.value_usd || 0) <= 1) return false
+    const hidden = String(a.visibility || 'visible').toLowerCase() === 'hidden'
+    if (hideLowValue && !hidden && Number(a.value_usd || 0) <= 1) return false
     if (selectedAccountIds.length > 0 && !selectedAccountIds.includes(Number(a.account_id || 0))) return false
     const chainKey = String(a.chain || '').trim().toLowerCase() || 'no-chain'
     if (selectedChains.length > 0 && !selectedChains.includes(chainKey)) return false
@@ -250,6 +265,7 @@ export default function Assets() {
   const totals = React.useMemo(() => {
     return filtered.reduce(
       (acc, row) => {
+        if (String(row.visibility || 'visible').toLowerCase() === 'hidden') return acc
         acc.eur += Number(row.value_eur || 0)
         acc.usd += Number(row.value_usd || 0)
         return acc
@@ -284,10 +300,16 @@ export default function Assets() {
                 Total USD: <strong>{formatUsd(totals.usd, { withCode: false })}</strong>
               </Typography>
             </Stack>
-            <FormControlLabel
-              control={<Checkbox checked={hideLowValue} onChange={(e) => setHideLowValue(e.target.checked)} />}
-              label={<Typography variant="body2">Hide coins with value &lt;= 1 USD</Typography>}
-            />
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
+              <FormControlLabel
+                control={<Checkbox checked={hideLowValue} onChange={(e) => setHideLowValue(e.target.checked)} />}
+                label={<Typography variant="body2">Hide coins with value &lt;= 1 USD</Typography>}
+              />
+              <FormControlLabel
+                control={<Checkbox checked={showSuspicious} onChange={(e) => setShowSuspicious(e.target.checked)} />}
+                label={<Typography variant="body2">Show suspicious tokens</Typography>}
+              />
+            </Stack>
           </Stack>
 
           <Stack direction="row" gap={1} flexWrap="wrap" alignItems="center">
@@ -401,7 +423,7 @@ export default function Assets() {
                 ) : null}
                 {sorted.map((a, idx) => (
                   <TableRow
-                    key={`${a.asset_symbol}-${a.account_id}-${String(a.chain || '')}`}
+                    key={`${a.asset_key || a.asset_symbol}-${a.account_id}`}
                     sx={(theme) => ({
                       backgroundColor:
                         idx % 2 === 0
@@ -419,9 +441,41 @@ export default function Assets() {
                     })}
                   >
                     <TableCell>
-                      <Stack direction="row" spacing={1} alignItems="center">
-                        <AssetIcon symbol={String(a.asset_symbol || '')} iconUrl={assetIcons[String(a.asset_symbol || '').toUpperCase()]} />
-                        <span>{a.asset_symbol}</span>
+                      <Stack direction="row" spacing={1} alignItems="flex-start">
+                        {String(a.visibility || 'visible').toLowerCase() === 'hidden' ? (
+                          <Box
+                            component="span"
+                            sx={{
+                              mt: 0.25,
+                              width: 18,
+                              height: 18,
+                              borderRadius: '50%',
+                              display: 'inline-grid',
+                              placeItems: 'center',
+                              bgcolor: 'warning.main',
+                              color: 'warning.contrastText',
+                              fontSize: 12,
+                              fontWeight: 800,
+                            }}
+                          >
+                            !
+                          </Box>
+                        ) : (
+                          <AssetIcon symbol={String(a.asset_symbol || '')} iconUrl={assetIcons[String(a.asset_symbol || '').toUpperCase()]} />
+                        )}
+                        <Stack spacing={0.25}>
+                          <span>{a.asset_symbol}</span>
+                          {String(a.visibility || 'visible').toLowerCase() === 'hidden' ? (
+                            <>
+                              <Chip size="small" color="warning" variant="outlined" label="Suspicious ERC-20" sx={{ width: 'fit-content', height: 20 }} />
+                              <Tooltip title={String(a.contract_address || 'Contract unavailable')}>
+                                <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace' }}>
+                                  {shortContract(a.contract_address) || 'Contract unavailable'}
+                                </Typography>
+                              </Tooltip>
+                            </>
+                          ) : null}
+                        </Stack>
                       </Stack>
                     </TableCell>
                     <TableCell>{accountDisplay(a)}</TableCell>

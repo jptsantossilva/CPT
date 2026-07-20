@@ -87,8 +87,8 @@ def portfolio_history(limit: int = 800):
 
 
 @app.get("/assets")
-def assets():
-    return db.list_assets()
+def assets(include_hidden: bool = False):
+    return db.list_assets(include_hidden=include_hidden)
 
 
 @app.get("/assets/icons")

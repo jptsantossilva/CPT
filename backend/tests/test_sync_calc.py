@@ -1,3 +1,5 @@
+import httpx
+
 from backend.app.services import prices
 
 
@@ -110,3 +112,96 @@ def test_fetch_icon_urls_uses_overrides_for_gun_and_gps(monkeypatch):
 
     assert mp["GUN"] == "https://img.test/gunz.png"
     assert mp["GPS"] == "https://img.test/gps.png"
+
+
+def test_fetch_evm_token_prices_uses_chain_and_contract(monkeypatch):
+    prices._contract_price_cache.clear()
+    requested_ids = []
+    monkeypatch.setattr(
+        prices,
+        "_load_contract_id_map",
+        lambda reload=False: {
+            "ethereum:0x1111111111111111111111111111111111111111": "usd-coin",
+        },
+    )
+
+    def fake_fetch(ids):
+        requested_ids.extend(ids)
+        return {"usd-coin": {"eur": 0.91, "usd": 1.0}}
+
+    monkeypatch.setattr(prices, "_fetch_simple_price", fake_fetch)
+    out = prices.fetch_evm_token_prices(
+        [
+            {
+                "chain": "ethereum",
+                "contract_address": "0x1111111111111111111111111111111111111111",
+                "price_key": "erc20:ethereum:0x1111111111111111111111111111111111111111",
+                "asset": "USDC",
+            },
+            {
+                "chain": "ethereum",
+                "contract_address": "0x2222222222222222222222222222222222222222",
+                "price_key": "erc20:ethereum:0x2222222222222222222222222222222222222222",
+                "asset": "ETH",
+            },
+        ]
+    )
+
+    assert requested_ids == ["usd-coin"]
+    assert out["erc20:ethereum:0x1111111111111111111111111111111111111111"]["price_usd"] == 1.0
+    missing = out["erc20:ethereum:0x2222222222222222222222222222222222222222"]
+    assert missing["price_usd"] == 0.0
+    assert missing["source"] == "coingecko_contract_missing"
+
+
+def test_load_contract_id_map_indexes_supported_platform_contracts(monkeypatch):
+    prices._contract_id_cache.update({"ts": 0, "data": {}, "loaded": False})
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params.get("include_platform") == "true"
+        return httpx.Response(
+            status_code=200,
+            json=[
+                {
+                    "id": "usd-coin",
+                    "symbol": "usdc",
+                    "platforms": {
+                        "ethereum": "0xA0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+                        "base": "0x833589fCD6EDB6E08f4C7C32D4f71b54bDa02913",
+                        "solana": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                    },
+                }
+            ],
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.Client
+    monkeypatch.setattr(prices.httpx, "Client", lambda **kwargs: real_client(transport=transport, **kwargs))
+
+    mapping = prices._load_contract_id_map(reload=True)
+
+    assert mapping == {
+        "ethereum:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": "usd-coin",
+        "base:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": "usd-coin",
+    }
+
+
+def test_fetch_evm_token_prices_leaves_provider_failures_unpriced(monkeypatch):
+    prices._contract_price_cache.clear()
+    monkeypatch.setattr(prices, "_load_contract_id_map", lambda reload=False: None)
+
+    out = prices.fetch_evm_token_prices(
+        [
+            {
+                "chain": "base",
+                "contract_address": "0x3333333333333333333333333333333333333333",
+                "price_key": "erc20:base:0x3333333333333333333333333333333333333333",
+                "asset": "WETH",
+            }
+        ]
+    )
+
+    row = out["erc20:base:0x3333333333333333333333333333333333333333"]
+    assert row["price_eur"] == 0.0
+    assert row["price_usd"] == 0.0
+    assert row["source"] == "coingecko_contract_error"

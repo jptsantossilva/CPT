@@ -126,7 +126,7 @@ def _fetch_alchemy_erc20_balances(
 
     rows = result.get("tokenBalances") or []
     for row in rows:
-        contract = row.get("contractAddress")
+        contract = str(row.get("contractAddress") or "").strip().lower()
         raw_balance = row.get("tokenBalance")
         if not contract or not raw_balance:
             continue
@@ -161,7 +161,15 @@ def _fetch_alchemy_erc20_balances(
         balance = raw / (10**decimals_int)
         if balance <= 0:
             continue
-        out.append({"symbol": symbol, "balance": balance})
+        out.append(
+            {
+                "symbol": symbol,
+                "name": str(meta.get("name") or "").strip() or None,
+                "balance": balance,
+                "asset_kind": "erc20",
+                "contract": contract,
+            }
+        )
     return out
 
 
@@ -220,6 +228,7 @@ def fetch_wallet_balances(
                     "symbol": str(meta["native_symbol"]),
                     "name": str(meta["native_name"]),
                     "contract": "native",
+                    "asset_kind": "native",
                     "balance": eth_balance,
                 }
             )

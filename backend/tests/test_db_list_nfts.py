@@ -33,7 +33,18 @@ def test_list_nfts_recomputes_valuations_from_latest_prices(monkeypatch, tmp_pat
             )
         )
         s.add(Price(asset_symbol="ETH", price_usd=2000.0, price_eur=1800.0, ts=now - timedelta(hours=1)))
-        s.add(Price(asset_symbol="ETH", price_usd=3000.0, price_eur=2700.0, ts=now))
+        s.add(Price(asset_symbol="ETH", price_usd=3000.0, price_eur=2700.0, price_key="symbol:ETH", ts=now))
+        # A contract-scoped price with the same symbol must never leak into
+        # native-symbol NFT valuation.
+        s.add(
+            Price(
+                asset_symbol="ETH",
+                price_usd=999999.0,
+                price_eur=999999.0,
+                price_key="erc20:ethereum:0x1111111111111111111111111111111111111111",
+                ts=now + timedelta(minutes=1),
+            )
+        )
         s.commit()
 
     rows = db.list_nfts()

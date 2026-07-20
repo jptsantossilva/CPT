@@ -21,6 +21,14 @@ class Holding(SQLModel, table=True):
     asset_symbol: str
     asset_name: Optional[str] = None
     quantity: float
+    # Stable identity and pricing identity. EVM token holdings use their
+    # contract address rather than the (non-unique) token symbol.
+    asset_key: Optional[str] = None
+    price_key: Optional[str] = None
+    asset_kind: Optional[str] = None  # native|erc20; null for legacy/non-EVM rows
+    contract_address: Optional[str] = None
+    visibility: str = "visible"
+    risk_reason: Optional[str] = None
 
 
 class Price(SQLModel, table=True):
@@ -28,6 +36,7 @@ class Price(SQLModel, table=True):
     asset_symbol: str
     price_eur: float
     price_usd: Optional[float] = None
+    price_key: Optional[str] = None
     ts: datetime = Field(default_factory=datetime.utcnow)
 
 

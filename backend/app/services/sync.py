@@ -12,6 +12,12 @@ from . import binance, btc, eth, nfts, prices, solana
 
 log = logging.getLogger(__name__)
 
+_EVM_NATIVE_SYMBOLS = {
+    "ethereum": "ETH",
+    "base": "ETH",
+    "polygon": "POL",
+}
+
 _state_lock = Lock()
 _sync_state: dict[str, object] = {
     "status": "idle",
@@ -112,6 +118,30 @@ def is_sync_running() -> bool:
         return _sync_state.get("status") == "running"
 
 
+def _symbol_price_key(symbol: str) -> str:
+    return f"symbol:{str(symbol or '').strip().upper()}"
+
+
+def _aggregate_holdings(rows: list[dict]) -> list[dict]:
+    """Combine duplicate account/asset identities without collapsing contracts."""
+    combined: dict[tuple[int, str], dict] = {}
+    for row in rows:
+        account_id = int(row.get("account_id") or 0)
+        asset_key = str(row.get("asset_key") or "").strip()
+        if not account_id or not asset_key:
+            continue
+        key = (account_id, asset_key)
+        existing = combined.get(key)
+        if existing is None:
+            combined[key] = dict(row)
+            continue
+        existing["qty"] = float(existing.get("qty") or 0.0) + float(row.get("qty") or 0.0)
+        if str(row.get("visibility") or "visible").lower() == "hidden":
+            existing["visibility"] = "hidden"
+            existing["risk_reason"] = row.get("risk_reason") or existing.get("risk_reason")
+    return list(combined.values())
+
+
 def _sync_binance_accounts() -> list[dict]:
     return _sync_binance_accounts_with_rows()
 
@@ -157,7 +187,20 @@ def _sync_binance_accounts_with_rows(
             qty = free + locked
             if qty <= 0:
                 continue
-            totals.append({"account_id": a.id, "asset": asset, "qty": qty})
+            symbol = str(asset).strip().upper()
+            totals.append(
+                {
+                    "account_id": a.id,
+                    "asset": symbol,
+                    "qty": qty,
+                    "asset_key": _symbol_price_key(symbol),
+                    "price_key": _symbol_price_key(symbol),
+                    "asset_kind": None,
+                    "contract_address": None,
+                    "visibility": "visible",
+                    "risk_reason": None,
+                }
+            )
     return totals
 
 
@@ -197,6 +240,12 @@ def _sync_wallet_accounts_with_rows(
                         "asset": asset,
                         "qty": qty,
                         "chain": "bitcoin",
+                        "asset_key": f"native:bitcoin:{asset}",
+                        "price_key": _symbol_price_key(asset),
+                        "asset_kind": "native",
+                        "contract_address": None,
+                        "visibility": "visible",
+                        "risk_reason": None,
                     }
                 )
             return out
@@ -221,6 +270,12 @@ def _sync_wallet_accounts_with_rows(
                         "asset": asset,
                         "qty": qty,
                         "chain": "solana",
+                        "asset_key": f"symbol:{asset}",
+                        "price_key": _symbol_price_key(asset),
+                        "asset_kind": None,
+                        "contract_address": None,
+                        "visibility": "visible",
+                        "risk_reason": None,
                     }
                 )
             return out
@@ -243,12 +298,48 @@ def _sync_wallet_accounts_with_rows(
                 qty = float(b.get("balance", 0) or 0)
                 if qty <= 0:
                     continue
+                native_symbol = _EVM_NATIVE_SYMBOLS[chain]
+                raw_kind = str(b.get("asset_kind") or "").strip().lower()
+                contract = str(b.get("contract") or "").strip().lower()
+                if raw_kind == "native" or contract == "native":
+                    asset_kind = "native"
+                    contract_address = None
+                elif raw_kind == "erc20" or contract:
+                    asset_kind = "erc20"
+                    contract_address = contract or None
+                elif asset == native_symbol:
+                    # Compatibility with custom/test providers that predate
+                    # explicit asset_kind metadata.
+                    asset_kind = "native"
+                    contract_address = None
+                else:
+                    asset_kind = "erc20"
+                    contract_address = None
+
+                if asset_kind == "native":
+                    asset_key = f"native:{chain}:{asset}"
+                    price_key = _symbol_price_key(asset)
+                    visibility = "visible"
+                    risk_reason = None
+                else:
+                    identity_contract = contract_address or f"unknown:{asset}"
+                    asset_key = f"erc20:{chain}:{identity_contract}"
+                    price_key = asset_key
+                    suspicious = asset == native_symbol
+                    visibility = "hidden" if suspicious else "visible"
+                    risk_reason = "reserved_native_symbol" if suspicious else None
                 out.append(
                     {
                         "account_id": a.id,
                         "asset": asset,
                         "qty": qty,
                         "chain": chain,
+                        "asset_key": asset_key,
+                        "price_key": price_key,
+                        "asset_kind": asset_kind,
+                        "contract_address": contract_address,
+                        "visibility": visibility,
+                        "risk_reason": risk_reason,
                     }
                 )
         return out
@@ -262,7 +353,7 @@ def _sync_wallet_accounts_with_rows(
             if on_progress:
                 on_progress(idx, len(rows), a)
             totals.extend(_fetch_for_wallet(a))
-        return totals
+        return _aggregate_holdings(totals)
 
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         futures = {ex.submit(_fetch_for_wallet, a): a for a in rows}
@@ -276,7 +367,7 @@ def _sync_wallet_accounts_with_rows(
                 totals.extend(fut.result())
             except Exception:
                 log.exception("failed to fetch wallet balances for account_id=%s", a.id)
-    return totals
+    return _aggregate_holdings(totals)
 
 
 def _apply_nft_blacklist(
@@ -382,6 +473,7 @@ def sync_all(trigger: str = "manual") -> None:
         _set_state(progress=40, message=f"Starting wallet sync for {len(wallet_rows)} wallet(s)...")
         wallet_holdings = _sync_wallet_accounts_with_rows(wallet_rows, on_progress=_w_progress)
         holdings.extend(wallet_holdings)
+        holdings = _aggregate_holdings(holdings)
         _set_state(progress=76, message=f"Fetching NFTs for {len(wallet_rows)} wallet(s)...")
         synced_nfts: list[dict] = []
 
@@ -423,20 +515,40 @@ def sync_all(trigger: str = "manual") -> None:
             log.exception("failed loading NFT blacklist")
         if blacklist_keys:
             synced_nfts = _apply_nft_blacklist(synced_nfts, blacklist_keys)
-        warning = _wallet_rpc_warning()
-        _set_state(progress=78, message=f"{len(holdings)} holdings and {len(synced_nfts)} NFTs collected")
+        warning_parts = [message for message in (_wallet_rpc_warning(),) if message]
+        visible_holdings = [
+            h for h in holdings if str(h.get("visibility") or "visible").strip().lower() == "visible"
+        ]
+        hidden_holdings_count = len(holdings) - len(visible_holdings)
+        _set_state(
+            progress=78,
+            message=(
+                f"{len(visible_holdings)} visible holdings, {hidden_holdings_count} suspicious hidden, "
+                f"and {len(synced_nfts)} NFTs collected"
+            ),
+        )
 
-        symbols = sorted({h["asset"] for h in holdings})
-        _set_state(progress=84, message=f"Fetching prices for {len(symbols)} assets...")
-        price_map = prices.fetch_prices(symbols)
+        symbol_holdings = [h for h in visible_holdings if h.get("asset_kind") != "erc20"]
+        contract_holdings = [h for h in visible_holdings if h.get("asset_kind") == "erc20"]
+        symbols = sorted({str(h["asset"]) for h in symbol_holdings})
+        _set_state(progress=84, message=f"Fetching prices for {len(visible_holdings)} assets...")
+        symbol_prices = prices.fetch_prices(symbols)
+        price_map: dict[str, dict] = {
+            _symbol_price_key(sym): data for sym, data in symbol_prices.items()
+        }
+        contract_prices = prices.fetch_evm_token_prices(contract_holdings)
+        price_map.update(contract_prices)
+        if any(str(p.get("source") or "") == "coingecko_contract_error" for p in contract_prices.values()):
+            warning_parts.append("Some ERC-20 contract prices could not be fetched; affected tokens were left unpriced.")
+        warning = " ".join(warning_parts) or None
 
         total_eur = 0.0
         total_usd = 0.0
         coin_totals_by_symbol: dict[str, dict[str, float]] = {}
         coin_qty_by_symbol: dict[str, float] = {}
-        for h in holdings:
+        for h in visible_holdings:
             sym = h["asset"]
-            p = price_map.get(sym, {"price_eur": 0, "price_usd": 0})
+            p = price_map.get(str(h.get("price_key") or ""), {"price_eur": 0, "price_usd": 0})
             qty = float(h["qty"] or 0.0)
             value_eur = h["qty"] * float(p.get("price_eur", 0) or 0)
             value_usd = h["qty"] * float(p.get("price_usd", 0) or 0)
@@ -476,6 +588,7 @@ def sync_all(trigger: str = "manual") -> None:
 
         history_meta = {
             "sync_trigger": trigger_mode,
+            "hidden_holdings_count": hidden_holdings_count,
             "totals": {
                 "coins_eur": total_eur,
                 "coins_usd": total_usd,
@@ -522,15 +635,26 @@ def sync_all(trigger: str = "manual") -> None:
                         asset_symbol=str(h["asset"]),
                         asset_name=str(h["chain"]) if h.get("chain") else None,
                         quantity=float(h["qty"]),
+                        asset_key=str(h.get("asset_key") or _symbol_price_key(str(h["asset"]))),
+                        price_key=str(h.get("price_key") or _symbol_price_key(str(h["asset"]))),
+                        asset_kind=h.get("asset_kind"),
+                        contract_address=h.get("contract_address"),
+                        visibility=str(h.get("visibility") or "visible"),
+                        risk_reason=h.get("risk_reason"),
                     )
                 )
-            for sym in symbols:
-                p = price_map.get(sym, {"price_eur": 0.0, "price_usd": 0.0})
+            price_symbol_by_key = {
+                str(h.get("price_key") or _symbol_price_key(str(h["asset"]))): str(h["asset"])
+                for h in visible_holdings
+            }
+            for price_key, sym in price_symbol_by_key.items():
+                p = price_map.get(price_key, {"price_eur": 0.0, "price_usd": 0.0})
                 s.add(
                     Price(
                         asset_symbol=sym,
                         price_eur=float(p.get("price_eur", 0.0) or 0.0),
                         price_usd=float(p.get("price_usd", 0.0) or 0.0),
+                        price_key=price_key,
                     )
                 )
             for row in synced_nfts:
@@ -559,8 +683,8 @@ def sync_all(trigger: str = "manual") -> None:
                 s,
                 total_eur=total_eur,
                 total_usd=total_usd,
-                holdings_count=len(holdings),
-                symbols_count=len(symbols),
+                holdings_count=len(visible_holdings),
+                symbols_count=len({str(h["asset"]) for h in visible_holdings}),
                 nfts_count=len(synced_nfts),
                 meta_payload=history_meta,
             )
@@ -570,11 +694,15 @@ def sync_all(trigger: str = "manual") -> None:
         _set_state(
             status="completed",
             progress=100,
-            message=f"Sync completed: {len(holdings)} holdings, {len(synced_nfts)} NFTs, total EUR {total_eur:.2f}, USD {total_usd:.2f}",
+            message=(
+                f"Sync completed: {len(visible_holdings)} visible holdings, "
+                f"{hidden_holdings_count} suspicious hidden, {len(synced_nfts)} NFTs, "
+                f"total EUR {total_eur:.2f}, USD {total_usd:.2f}"
+            ),
             finished_at=finished,
             last_error=None,
             warning=warning,
-            holdings_count=len(holdings),
+            holdings_count=len(visible_holdings),
             nfts_count=len(synced_nfts),
             total_eur=total_eur,
             total_usd=total_usd,

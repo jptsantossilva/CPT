@@ -37,6 +37,15 @@ _SYMBOL_MAPPING_TTL = 60
 _price_cache: Dict[str, dict] = {}
 _PRICE_TTL = 60
 
+# Contract-aware price cache: erc20:{chain}:{contract} -> {ts, data}
+_contract_price_cache: Dict[str, dict] = {}
+_contract_id_cache: Dict[str, int | bool | dict] = {"ts": 0, "data": {}, "loaded": False}
+_CONTRACT_PLATFORM_IDS = {
+    "ethereum": "ethereum",
+    "base": "base",
+    "polygon": "polygon-pos",
+}
+
 # Icon cache: symbol -> {ts, data}
 _icon_cache: Dict[str, dict] = {}
 _ICON_TTL = 12 * 3600
@@ -164,6 +173,163 @@ def _fetch_simple_price(ids: List[str]) -> Dict[str, dict]:
 
     log.error("failed to fetch prices from CoinGecko after retries")
     return {}
+
+
+def _load_contract_id_map(reload: bool = False) -> Dict[str, str] | None:
+    """Load CoinGecko IDs keyed by ``platform:contract``.
+
+    The keyless contract-price endpoint can restrict requests to one address.
+    Resolving contracts through the daily coin list lets the normal bulk price
+    endpoint remain efficient while preserving contract-based identity.
+    """
+    if (
+        not reload
+        and bool(_contract_id_cache["loaded"])
+        and _now() - float(_contract_id_cache["ts"]) < _COIN_LIST_TTL
+    ):
+        return _contract_id_cache["data"]  # type: ignore[return-value]
+
+    url = f"{COINGECKO_BASE}/coins/list"
+    attempts = 0
+    backoff = 1
+    while attempts < 4:
+        try:
+            with httpx.Client(timeout=30) as cli:
+                response = cli.get(url, params={"include_platform": "true"})
+                if response.status_code == 429:
+                    attempts += 1
+                    log.warning("CoinGecko contract map rate limited, sleeping %s seconds", backoff)
+                    time.sleep(backoff)
+                    backoff *= 2
+                    continue
+                response.raise_for_status()
+                rows = response.json()
+                mapping: Dict[str, str] = {}
+                supported_platforms = set(_CONTRACT_PLATFORM_IDS.values())
+                for row in rows if isinstance(rows, list) else []:
+                    coin_id = str(row.get("id") or "").strip()
+                    if not coin_id:
+                        continue
+                    platforms = row.get("platforms") or {}
+                    if not isinstance(platforms, dict):
+                        continue
+                    for platform, raw_contract in platforms.items():
+                        contract = str(raw_contract or "").strip().lower()
+                        if platform in supported_platforms and contract:
+                            mapping[f"{platform}:{contract}"] = coin_id
+                _contract_id_cache["ts"] = _now()
+                _contract_id_cache["data"] = mapping
+                _contract_id_cache["loaded"] = True
+                return mapping
+        except Exception as exc:
+            attempts += 1
+            log.warning(
+                "error fetching CoinGecko contract map (attempt %s): %s",
+                attempts,
+                exc,
+            )
+            if attempts < 4:
+                time.sleep(backoff)
+                backoff *= 2
+
+    log.error("failed to fetch CoinGecko contract map after retries")
+    cached = _contract_id_cache.get("data")
+    if bool(_contract_id_cache.get("loaded")) and isinstance(cached, dict):
+        return cached  # type: ignore[return-value]
+    return None
+
+
+def fetch_evm_token_prices(tokens: List[dict]) -> Dict[str, dict]:
+    """Return ERC-20 prices keyed by contract-aware ``price_key``.
+
+    Tokens absent from CoinGecko, unsupported chains and provider failures are
+    explicitly unpriced. Symbol pricing is never used as a fallback.
+    """
+    now = _now()
+    out: Dict[str, dict] = {}
+    pending: Dict[str, tuple[str, str]] = {}
+
+    for token in tokens:
+        chain = str(token.get("chain") or "").strip().lower()
+        contract = str(token.get("contract_address") or token.get("contract") or "").strip().lower()
+        price_key = str(token.get("price_key") or "").strip()
+        if not price_key and chain and contract:
+            price_key = f"erc20:{chain}:{contract}"
+        if not price_key:
+            continue
+
+        cached = _contract_price_cache.get(price_key)
+        if cached and now - cached["ts"] < _PRICE_TTL:
+            out[price_key] = cached["data"].copy()
+            continue
+
+        if chain not in _CONTRACT_PLATFORM_IDS or not contract:
+            entry = {
+                "price_eur": 0.0,
+                "price_usd": 0.0,
+                "ts": now,
+                "source": "unsupported_contract_chain",
+            }
+            out[price_key] = entry
+            _contract_price_cache[price_key] = {"ts": now, "data": entry}
+            continue
+        pending[price_key] = (_CONTRACT_PLATFORM_IDS[chain], contract)
+
+    if not pending:
+        return out
+
+    contract_ids = _load_contract_id_map()
+    if contract_ids is None:
+        for price_key in pending:
+            entry = {
+                "price_eur": 0.0,
+                "price_usd": 0.0,
+                "ts": now,
+                "source": "coingecko_contract_error",
+            }
+            out[price_key] = entry
+            _contract_price_cache[price_key] = {"ts": now, "data": entry}
+        return out
+
+    price_keys_by_id: Dict[str, List[str]] = {}
+    for price_key, (platform, contract) in pending.items():
+        coin_id = contract_ids.get(f"{platform}:{contract}")
+        if coin_id:
+            price_keys_by_id.setdefault(coin_id, []).append(price_key)
+            continue
+        entry = {
+            "price_eur": 0.0,
+            "price_usd": 0.0,
+            "ts": now,
+            "source": "coingecko_contract_missing",
+        }
+        out[price_key] = entry
+        _contract_price_cache[price_key] = {"ts": now, "data": entry}
+
+    if price_keys_by_id:
+        price_response = _fetch_simple_price(list(price_keys_by_id))
+        provider_failed = not price_response
+        for coin_id, price_keys in price_keys_by_id.items():
+            data = price_response.get(coin_id)
+            for price_key in price_keys:
+                if isinstance(data, dict):
+                    entry = {
+                        "price_eur": float(data.get("eur", 0.0) or 0.0),
+                        "price_usd": float(data.get("usd", 0.0) or 0.0),
+                        "ts": now,
+                        "source": "coingecko_contract",
+                    }
+                else:
+                    entry = {
+                        "price_eur": 0.0,
+                        "price_usd": 0.0,
+                        "ts": now,
+                        "source": "coingecko_contract_error" if provider_failed else "coingecko_contract_missing",
+                    }
+                out[price_key] = entry
+                _contract_price_cache[price_key] = {"ts": now, "data": entry}
+
+    return out
 
 
 def _fetch_coin_markets(ids: List[str]) -> Dict[str, dict]:

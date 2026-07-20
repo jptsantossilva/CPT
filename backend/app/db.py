@@ -24,9 +24,48 @@ DEFAULT_PRICE_SYMBOL_MAPPINGS: dict[str, dict[str, str]] = {
 
 def init_db():
     SQLModel.metadata.create_all(engine)
+    _ensure_holding_identity_columns()
+    _ensure_price_identity_columns()
     _ensure_nft_holding_columns()
     _ensure_notification_anchor_columns()
     seed_default_price_symbol_mappings()
+
+
+def _ensure_holding_identity_columns() -> None:
+    """Best-effort compatibility for databases created before asset identities."""
+    try:
+        insp = inspect(engine)
+        if "holding" not in insp.get_table_names():
+            return
+        existing = {str(c.get("name")) for c in insp.get_columns("holding")}
+        columns = {
+            "asset_key": "VARCHAR",
+            "price_key": "VARCHAR",
+            "asset_kind": "VARCHAR",
+            "contract_address": "VARCHAR",
+            "visibility": "VARCHAR DEFAULT 'visible'",
+            "risk_reason": "VARCHAR",
+        }
+        with engine.begin() as conn:
+            for name, sql_type in columns.items():
+                if name not in existing:
+                    conn.execute(text(f"ALTER TABLE holding ADD COLUMN {name} {sql_type}"))
+    except Exception:
+        return
+
+
+def _ensure_price_identity_columns() -> None:
+    """Best-effort compatibility for prices keyed by contract-aware identity."""
+    try:
+        insp = inspect(engine)
+        if "price" not in insp.get_table_names():
+            return
+        existing = {str(c.get("name")) for c in insp.get_columns("price")}
+        if "price_key" not in existing:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE price ADD COLUMN price_key VARCHAR"))
+    except Exception:
+        return
 
 
 def seed_default_price_symbol_mappings() -> None:
@@ -125,7 +164,7 @@ def set_app_setting(key: str, value: str) -> None:
         s.commit()
 
 
-def list_assets():
+def list_assets(include_hidden: bool = False):
     with get_session() as s:
         holdings = s.exec(select(Holding)).all()
         if not holdings:
@@ -136,19 +175,34 @@ def list_assets():
 
         prices = s.exec(select(Price).order_by(Price.ts.desc())).all()
         latest_price_by_symbol: dict[str, Price] = {}
+        latest_price_by_key: dict[str, Price] = {}
         for p in prices:
             sym = (p.asset_symbol or "").upper()
-            if sym and sym not in latest_price_by_symbol:
+            key = str(getattr(p, "price_key", None) or "").strip()
+            if sym and (not key or key == f"symbol:{sym}") and sym not in latest_price_by_symbol:
                 latest_price_by_symbol[sym] = p
+            if key and key not in latest_price_by_key:
+                latest_price_by_key[key] = p
 
         out = []
         for h in holdings:
             sym = (h.asset_symbol or "").upper()
             if not sym:
                 continue
-            price = latest_price_by_symbol.get(sym)
+            visibility = str(getattr(h, "visibility", None) or "visible").strip().lower()
+            if visibility not in {"visible", "hidden"}:
+                visibility = "visible"
+            if visibility == "hidden" and not include_hidden:
+                continue
+            price_key = str(getattr(h, "price_key", None) or "").strip()
+            price = latest_price_by_key.get(price_key) if price_key else latest_price_by_symbol.get(sym)
             price_eur = float(price.price_eur) if price else 0.0
             price_usd = float(price.price_usd) if price and price.price_usd else 0.0
+            if visibility == "hidden":
+                # Hidden/suspicious holdings are diagnostic only and can never
+                # affect portfolio valuations, even if a stale price exists.
+                price_eur = 0.0
+                price_usd = 0.0
             qty = float(h.quantity or 0.0)
             account_id = int(h.account_id)
             account = account_by_id.get(account_id)
@@ -170,6 +224,12 @@ def list_assets():
                     "account_label": account_label,
                     "account_display": account_label or account_identifier or "unknown",
                     "chain": holding_chain,
+                    "asset_key": getattr(h, "asset_key", None) or f"symbol:{sym}",
+                    "price_key": price_key or f"symbol:{sym}",
+                    "asset_kind": getattr(h, "asset_kind", None),
+                    "contract_address": getattr(h, "contract_address", None),
+                    "visibility": visibility,
+                    "risk_reason": getattr(h, "risk_reason", None),
                     "quantity": qty,
                     "price_eur": price_eur,
                     "price_usd": price_usd,
@@ -193,7 +253,8 @@ def list_nfts(include_hidden: bool = False):
         latest_price_by_symbol: dict[str, Price] = {}
         for p in prices:
             sym = (p.asset_symbol or "").upper()
-            if sym and sym not in latest_price_by_symbol:
+            price_key = str(getattr(p, "price_key", None) or "").strip()
+            if sym and (not price_key or price_key == f"symbol:{sym}") and sym not in latest_price_by_symbol:
                 latest_price_by_symbol[sym] = p
 
         out = []

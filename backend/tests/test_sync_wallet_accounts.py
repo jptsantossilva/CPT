@@ -33,6 +33,13 @@ class _FakeSessionCtx:
         return None
 
 
+def _core(rows):
+    return [
+        {key: row.get(key) for key in ("account_id", "asset", "qty", "chain")}
+        for row in rows
+    ]
+
+
 def test_sync_wallet_accounts_maps_symbol_and_balance(monkeypatch):
     rows = [
         SimpleNamespace(id=3, provider="wallet", identifier="0x470BaB7c3E3e4FaDBA43AfAfc843149C6cBc3cFa"),
@@ -49,7 +56,7 @@ def test_sync_wallet_accounts_maps_symbol_and_balance(monkeypatch):
 
     holdings = sync._sync_wallet_accounts()
 
-    assert holdings == [
+    assert _core(holdings) == [
         {"account_id": 3, "asset": "ETH", "qty": 0.5, "chain": "ethereum"},
         {"account_id": 3, "asset": "USDC", "qty": 40.0, "chain": "ethereum"},
         {"account_id": 3, "asset": "USDC", "qty": 2.0, "chain": "base"},
@@ -72,7 +79,7 @@ def test_sync_wallet_accounts_queries_ethereum_and_base(monkeypatch):
 
     holdings = sync._sync_wallet_accounts()
 
-    assert holdings == [
+    assert _core(holdings) == [
         {"account_id": 7, "asset": "ETH", "qty": 1.0, "chain": "ethereum"},
         {"account_id": 7, "asset": "ETH", "qty": 1.0, "chain": "base"},
         {"account_id": 7, "asset": "ETH", "qty": 1.0, "chain": "polygon"},
@@ -110,7 +117,7 @@ def test_sync_wallet_accounts_bitcoin_wallet_uses_btc_service(monkeypatch):
 
     holdings = sync._sync_wallet_accounts()
 
-    assert holdings == [{"account_id": 11, "asset": "BTC", "qty": 0.25, "chain": "bitcoin"}]
+    assert _core(holdings) == [{"account_id": 11, "asset": "BTC", "qty": 0.25, "chain": "bitcoin"}]
     assert calls["btc"] == 1
     assert calls["eth"] == 0
 
@@ -141,7 +148,7 @@ def test_sync_wallet_accounts_bitcoin_xpub_uses_btc_service(monkeypatch):
 
     holdings = sync._sync_wallet_accounts()
 
-    assert holdings == [{"account_id": 13, "asset": "BTC", "qty": 0.5, "chain": "bitcoin"}]
+    assert _core(holdings) == [{"account_id": 13, "asset": "BTC", "qty": 0.5, "chain": "bitcoin"}]
     assert calls["btc"] == 1
     assert calls["eth"] == 0
 
@@ -198,7 +205,40 @@ def test_sync_wallet_accounts_solana_wallet_uses_solana_service(monkeypatch):
 
     holdings = sync._sync_wallet_accounts()
 
-    assert holdings == [{"account_id": 12, "asset": "SOL", "qty": 3.5, "chain": "solana"}]
+    assert _core(holdings) == [{"account_id": 12, "asset": "SOL", "qty": 3.5, "chain": "solana"}]
     assert calls["sol"] == 1
     assert calls["eth"] == 0
     assert calls["btc"] == 0
+
+
+def test_sync_wallet_accounts_separates_native_eth_and_hides_erc20_spoof(monkeypatch):
+    rows = [
+        SimpleNamespace(id=21, provider="wallet", identifier="0x470BaB7c3E3e4FaDBA43AfAfc843149C6cBc3cFa"),
+    ]
+    monkeypatch.setattr(sync, "get_session", lambda: _FakeSessionCtx(rows))
+
+    fake_contract = "0x1111111111111111111111111111111111111111"
+
+    def fake_fetch(_address, chain="ethereum"):
+        if chain != "ethereum":
+            return []
+        return [
+            {"symbol": "ETH", "balance": 0.25, "asset_kind": "native", "contract": "native"},
+            {"symbol": "ETH", "balance": 2.25e58, "asset_kind": "erc20", "contract": fake_contract},
+            {"symbol": "ETH", "balance": 1.0, "asset_kind": "erc20", "contract": fake_contract.upper()},
+        ]
+
+    monkeypatch.setattr(sync.eth, "fetch_wallet_balances", fake_fetch)
+
+    holdings = sync._sync_wallet_accounts()
+
+    assert len(holdings) == 2
+    native = next(row for row in holdings if row["asset_kind"] == "native")
+    spoof = next(row for row in holdings if row["asset_kind"] == "erc20")
+    assert native["asset_key"] == "native:ethereum:ETH"
+    assert native["price_key"] == "symbol:ETH"
+    assert native["visibility"] == "visible"
+    assert spoof["asset_key"] == f"erc20:ethereum:{fake_contract}"
+    assert spoof["qty"] == 2.25e58 + 1.0
+    assert spoof["visibility"] == "hidden"
+    assert spoof["risk_reason"] == "reserved_native_symbol"

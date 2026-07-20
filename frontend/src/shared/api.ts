@@ -141,9 +141,9 @@ export async function fetchLatestSnapshot() {
   }
 }
 
-export async function fetchAssets() {
+export async function fetchAssets(includeHidden = false) {
   try {
-    return await apiGet<any[]>('/assets')
+    return await apiGet<any[]>(`/assets?include_hidden=${includeHidden ? 'true' : 'false'}`)
   } catch {
     return []
   }
