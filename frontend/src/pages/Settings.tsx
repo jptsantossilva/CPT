@@ -57,6 +57,24 @@ function toPayload(form: MappingForm) {
   }
 }
 
+function formatSnapshotTotal(value: number, currency: 'EUR' | 'USD'): string {
+  const amount = Number(value || 0)
+  if (!Number.isFinite(amount)) return `${currency} invalid`
+  if (Math.abs(amount) >= 1_000_000_000_000) {
+    return `${currency} ${amount.toExponential(4)}`
+  }
+  return currency === 'EUR' ? formatEur(amount) : formatUsd(amount)
+}
+
+function snapshotTotalDetails(value: number, currency: 'EUR' | 'USD'): string {
+  const amount = Number(value || 0)
+  if (!Number.isFinite(amount)) return `${currency} invalid numeric value`
+  if (Math.abs(amount) >= 1_000_000_000_000) {
+    return `${currency} ${amount.toExponential(12)}`
+  }
+  return currency === 'EUR' ? formatEur(amount) : formatUsd(amount)
+}
+
 export default function Settings() {
   const [mappings, setMappings] = React.useState<PriceSymbolMapping[]>([])
   const [loading, setLoading] = React.useState(false)
@@ -326,15 +344,27 @@ export default function Settings() {
             </ButtonGroup>
 
             <Box sx={{ overflowX: 'auto' }}>
-              <Table size="small">
+              <Table size="small" sx={{ tableLayout: 'fixed', minWidth: 900, width: '100%' }}>
                 <TableHead>
                   <TableRow>
-                    <TableCell>Date</TableCell>
-                    <TableCell>Total EUR</TableCell>
-                    <TableCell>Total USD</TableCell>
-                    <TableCell>Status</TableCell>
-                    <TableCell>Reason / Audit</TableCell>
-                    <TableCell align="right">Actions</TableCell>
+                    <TableCell sx={{ width: '17%' }}>Date</TableCell>
+                    <TableCell sx={{ width: '16%' }}>Total EUR</TableCell>
+                    <TableCell sx={{ width: '16%' }}>Total USD</TableCell>
+                    <TableCell sx={{ width: '11%' }}>Status</TableCell>
+                    <TableCell sx={{ width: '25%' }}>Reason / Audit</TableCell>
+                    <TableCell
+                      align="right"
+                      sx={{
+                        width: '15%',
+                        position: 'sticky',
+                        right: 0,
+                        zIndex: 2,
+                        bgcolor: 'background.paper',
+                        boxShadow: '-8px 0 12px -12px rgba(0,0,0,0.45)',
+                      }}
+                    >
+                      Actions
+                    </TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
@@ -342,9 +372,21 @@ export default function Settings() {
                     const candidate = candidateById.get(row.id)
                     return (
                       <TableRow key={row.id} sx={candidate ? { bgcolor: 'warning.light' } : undefined}>
-                        <TableCell>{new Date(row.timestamp).toLocaleString()}</TableCell>
-                        <TableCell>{formatEur(Number(row.total_eur || 0))}</TableCell>
-                        <TableCell>{formatUsd(Number(row.total_usd || 0))}</TableCell>
+                        <TableCell sx={{ whiteSpace: 'nowrap' }}>{new Date(row.timestamp).toLocaleString()}</TableCell>
+                        <TableCell sx={{ overflow: 'hidden' }}>
+                          <Tooltip title={snapshotTotalDetails(row.total_eur, 'EUR')}>
+                            <Typography variant="body2" noWrap>
+                              {formatSnapshotTotal(row.total_eur, 'EUR')}
+                            </Typography>
+                          </Tooltip>
+                        </TableCell>
+                        <TableCell sx={{ overflow: 'hidden' }}>
+                          <Tooltip title={snapshotTotalDetails(row.total_usd, 'USD')}>
+                            <Typography variant="body2" noWrap>
+                              {formatSnapshotTotal(row.total_usd, 'USD')}
+                            </Typography>
+                          </Tooltip>
+                        </TableCell>
                         <TableCell>
                           <Chip
                             size="small"
@@ -353,12 +395,28 @@ export default function Settings() {
                             label={row.is_valid ? (candidate ? 'Candidate' : 'Valid') : 'Invalid'}
                           />
                         </TableCell>
-                        <TableCell>
-                          {row.invalid_reason
-                            || candidate?.anomaly?.detected_reasons.join(', ')
-                            || '-'}
+                        <TableCell sx={{ overflow: 'hidden' }}>
+                          <Tooltip
+                            title={row.invalid_reason || candidate?.anomaly?.detected_reasons.join(', ') || '-'}
+                          >
+                            <Typography variant="body2" noWrap>
+                              {row.invalid_reason
+                                || candidate?.anomaly?.detected_reasons.join(', ')
+                                || '-'}
+                            </Typography>
+                          </Tooltip>
                         </TableCell>
-                        <TableCell align="right">
+                        <TableCell
+                          align="right"
+                          sx={{
+                            position: 'sticky',
+                            right: 0,
+                            zIndex: 1,
+                            bgcolor: 'background.paper',
+                            boxShadow: '-8px 0 12px -12px rgba(0,0,0,0.45)',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
                           {row.is_valid ? (
                             <Button size="small" color="warning" onClick={() => markSnapshotInvalid(row)} disabled={snapshotLoading}>
                               Mark invalid

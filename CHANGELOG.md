@@ -8,6 +8,7 @@ All notable changes to this project will be documented in this file.
 - Added a reversible Snapshot History quarantine workflow in Settings, including dry-run anomaly detection, manual invalidation, bulk quarantine of detected outliers, status filtering, and snapshot restoration.
 
 ### Fixed
+- Kept Snapshot History status, audit reason, and action controls accessible when quarantined snapshots contain extremely large totals by using compact scientific notation and fixed/sticky table columns.
 - Distinguished native EVM assets from ERC-20 tokens by chain and contract address, preventing arbitrary contracts that reuse symbols such as `ETH` from receiving native-asset prices.
 - Fixed contract-address pricing for legitimate ERC-20 holdings such as USDC and WETH by resolving contracts through CoinGecko's platform map, avoiding the keyless token-price endpoint's batch restriction.
 - Kept unknown contracts safely unpriced instead of falling back to potentially ambiguous symbol-only prices.
