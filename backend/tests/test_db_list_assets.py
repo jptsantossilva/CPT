@@ -148,3 +148,46 @@ def test_identity_column_migrations_upgrade_legacy_tables(monkeypatch, tmp_path)
     }.issubset(holding_columns)
     assert "price_key" in price_columns
     assert {"is_valid", "invalid_reason", "invalidated_at"}.issubset(snapshot_columns)
+
+
+def test_snapshot_migration_uses_postgresql_compatible_timestamp(monkeypatch):
+    statements = []
+
+    class _Inspector:
+        def get_table_names(self):
+            return ["snapshot"]
+
+        def get_columns(self, _table):
+            return [
+                {"name": "id"},
+                {"name": "timestamp"},
+                {"name": "total_eur"},
+                {"name": "total_usd"},
+                {"name": "meta"},
+            ]
+
+    class _Connection:
+        def execute(self, statement):
+            statements.append(str(statement))
+
+    class _Begin:
+        def __enter__(self):
+            return _Connection()
+
+        def __exit__(self, *_args):
+            return None
+
+    class _Engine:
+        def begin(self):
+            return _Begin()
+
+    monkeypatch.setattr(db, "engine", _Engine())
+    monkeypatch.setattr(db, "inspect", lambda _engine: _Inspector())
+
+    db._ensure_snapshot_validity_columns()
+
+    assert statements == [
+        "ALTER TABLE snapshot ADD COLUMN is_valid BOOLEAN DEFAULT TRUE",
+        "ALTER TABLE snapshot ADD COLUMN invalid_reason VARCHAR",
+        "ALTER TABLE snapshot ADD COLUMN invalidated_at TIMESTAMP",
+    ]

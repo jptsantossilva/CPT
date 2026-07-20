@@ -1,3 +1,4 @@
+import logging
 import os
 
 from sqlalchemy import inspect, text
@@ -6,6 +7,8 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from .config import settings
 from .models import Account, AppSetting, Holding, NFTBlacklist, NFTHolding, Price, PriceSymbolMapping, Snapshot
 from .wallet_chains import parse_wallet_identifier
+
+log = logging.getLogger(__name__)
 
 DB_URL = os.getenv("DATABASE_URL") or settings.DATABASE_URL
 engine = create_engine(DB_URL, echo=False)
@@ -79,14 +82,16 @@ def _ensure_snapshot_validity_columns() -> None:
         columns = {
             "is_valid": "BOOLEAN DEFAULT TRUE",
             "invalid_reason": "VARCHAR",
-            "invalidated_at": "DATETIME",
+            # TIMESTAMP is supported by both PostgreSQL and SQLite. PostgreSQL
+            # does not provide a DATETIME type and would roll back the migration.
+            "invalidated_at": "TIMESTAMP",
         }
         with engine.begin() as conn:
             for name, sql_type in columns.items():
                 if name not in existing:
                     conn.execute(text(f"ALTER TABLE snapshot ADD COLUMN {name} {sql_type}"))
     except Exception:
-        return
+        log.exception("failed to add snapshot validity columns")
 
 
 def seed_default_price_symbol_mappings() -> None:

@@ -14,6 +14,7 @@ All notable changes to this project will be documented in this file.
 - Hidden ERC-20 tokens that impersonate a chain's native symbol from portfolio totals by default, with an optional Coins-page diagnostic view showing the suspicious contract and reason.
 - Added backward-compatible holding/price identity migrations and contract-aware asset API fields for existing SQLite and PostgreSQL deployments.
 - Excluded quarantined snapshots from portfolio history charts, variation calculations, latest-snapshot totals, and notification comparisons without deleting the underlying records.
+- Fixed the snapshot quarantine migration to use a PostgreSQL-compatible `TIMESTAMP` column so production startup creates all validity fields successfully.
 
 ## [2026.05.27]
 
