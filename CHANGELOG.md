@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2026.07.22]
+
+### Fixed
+- Reduced CoinGecko rate limiting by prioritizing sync price requests over batched icon lookups, sharing provider cooldowns, and avoiding remote icon requests for unpriced assets.
+- Preserved exact-key prices for up to 24 hours during transient CoinGecko failures, with price-quality metadata and clearer degraded-sync warnings instead of immediately replacing valid prices with zero.
+- Added local CoinGecko ID mappings for canonical stablecoin and wrapped-token contracts while retaining dynamic contract discovery for other ERC-20 assets.
+- Added an explicit `ETH` to `ethereum` CoinGecko mapping so native Ethereum and Base balances cannot resolve to an unrelated asset sharing the `ETH` ticker.
+
 ## [2026.07.20]
 
 ### Added

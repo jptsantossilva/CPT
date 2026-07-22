@@ -126,6 +126,7 @@ export default function Assets() {
     const symbols = Array.from(new Set(
       assets
         .filter((a) => String(a.visibility || 'visible').toLowerCase() !== 'hidden')
+        .filter((a) => Number(a.price_usd || 0) > 0 || Number(a.price_eur || 0) > 0)
         .map((a) => String(a.asset_symbol || '').toUpperCase())
         .filter(Boolean)
     ))

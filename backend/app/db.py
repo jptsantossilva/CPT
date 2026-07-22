@@ -15,6 +15,7 @@ engine = create_engine(DB_URL, echo=False)
 
 DEFAULT_PRICE_SYMBOL_MAPPINGS: dict[str, dict[str, str]] = {
     "BTC": {"provider_id": "bitcoin", "label": "Bitcoin"},
+    "ETH": {"provider_id": "ethereum", "label": "Ethereum"},
     "GUN": {"provider_id": "gunz", "label": "Gunz"},
     "GPS": {"provider_id": "goplus-security", "label": "GoPlus Security"},
     "ONE": {"provider_id": "harmony", "label": "Harmony"},

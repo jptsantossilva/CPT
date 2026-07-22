@@ -239,7 +239,14 @@ export default function Dashboard({ currencyMode }: { currencyMode: CurrencyMode
   }, [])
 
   React.useEffect(() => {
-    const symbols = Array.from(new Set(assets.map((a) => String(a.asset_symbol || '').toUpperCase()).filter(Boolean)))
+    if (!syncStatus || syncLoading) return
+    const symbols = Array.from(new Set(
+      assets
+        .filter((a) => String(a.visibility || 'visible').toLowerCase() !== 'hidden')
+        .filter((a) => Number(a.price_usd || 0) > 0 || Number(a.price_eur || 0) > 0)
+        .map((a) => String(a.asset_symbol || '').toUpperCase())
+        .filter(Boolean)
+    ))
     if (symbols.length === 0) {
       setAssetIcons({})
       return
@@ -247,7 +254,7 @@ export default function Dashboard({ currencyMode }: { currencyMode: CurrencyMode
     fetchAssetIcons(symbols)
       .then((icons) => setAssetIcons(icons || {}))
       .catch(() => setAssetIcons({}))
-  }, [assets])
+  }, [assets, syncLoading, syncStatus])
 
   React.useEffect(() => {
     fetchSyncStatus()

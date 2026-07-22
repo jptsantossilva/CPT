@@ -17,6 +17,8 @@ _EVM_NATIVE_SYMBOLS = {
     "base": "ETH",
     "polygon": "POL",
 }
+_PRICE_FALLBACK_MAX_AGE = timedelta(hours=24)
+_TRANSIENT_PRICE_SOURCES = {"coingecko_error", "coingecko_contract_error"}
 
 _state_lock = Lock()
 _sync_state: dict[str, object] = {
@@ -120,6 +122,58 @@ def is_sync_running() -> bool:
 
 def _symbol_price_key(symbol: str) -> str:
     return f"symbol:{str(symbol or '').strip().upper()}"
+
+
+def _apply_previous_price_fallback(
+    price_map: dict[str, dict],
+    requested_price_keys: set[str],
+    previous_prices: dict[str, Price],
+    *,
+    now: datetime | None = None,
+) -> dict[str, int]:
+    """Reuse recent exact-key prices only for transient provider failures."""
+    current_time = now or datetime.utcnow()
+    quality = {"current": 0, "reused": 0, "unpriced": 0}
+    for price_key in requested_price_keys:
+        entry = price_map.get(price_key) or {
+            "price_eur": 0.0,
+            "price_usd": 0.0,
+            "source": "missing",
+        }
+        source = str(entry.get("source") or "")
+        has_price = float(entry.get("price_eur") or 0.0) > 0 or float(entry.get("price_usd") or 0.0) > 0
+        if source not in _TRANSIENT_PRICE_SOURCES:
+            quality["current" if has_price else "unpriced"] += 1
+            price_map[price_key] = entry
+            continue
+
+        previous = previous_prices.get(price_key)
+        previous_ts = getattr(previous, "ts", None) if previous else None
+        age = current_time - previous_ts if previous_ts else None
+        previous_has_price = bool(
+            previous
+            and (
+                float(previous.price_eur or 0.0) > 0
+                or float(previous.price_usd or 0.0) > 0
+            )
+        )
+        if (
+            previous_has_price
+            and age is not None
+            and timedelta(0) <= age <= _PRICE_FALLBACK_MAX_AGE
+        ):
+            price_map[price_key] = {
+                "price_eur": float(previous.price_eur or 0.0),
+                "price_usd": float(previous.price_usd or 0.0),
+                "source": "stale_previous",
+                "provider_source": source,
+                "persisted_ts": previous_ts,
+            }
+            quality["reused"] += 1
+        else:
+            price_map[price_key] = entry
+            quality["unpriced"] += 1
+    return quality
 
 
 def _aggregate_holdings(rows: list[dict]) -> list[dict]:
@@ -446,6 +500,12 @@ def sync_all(trigger: str = "manual") -> None:
         with get_session() as s:
             binance_rows = s.query(Account).filter(Account.provider == "binance").all()
             wallet_rows = s.query(Account).filter(Account.provider == "wallet").all()
+            previous_price_rows = s.query(Price).order_by(Price.ts.desc()).all()
+        previous_prices: dict[str, Price] = {}
+        for previous in previous_price_rows:
+            key = str(previous.price_key or "").strip()
+            if key and key not in previous_prices:
+                previous_prices[key] = previous
 
         def _fmt_account(a: Account) -> str:
             return a.label or a.identifier or f"id={a.id}"
@@ -538,8 +598,36 @@ def sync_all(trigger: str = "manual") -> None:
         }
         contract_prices = prices.fetch_evm_token_prices(contract_holdings)
         price_map.update(contract_prices)
-        if any(str(p.get("source") or "") == "coingecko_contract_error" for p in contract_prices.values()):
-            warning_parts.append("Some ERC-20 contract prices could not be fetched; affected tokens were left unpriced.")
+        requested_price_keys = {
+            str(h.get("price_key") or "").strip()
+            for h in visible_holdings
+            if str(h.get("price_key") or "").strip()
+        }
+        provider_error_count = sum(
+            1
+            for key in requested_price_keys
+            if str((price_map.get(key) or {}).get("source") or "") in _TRANSIENT_PRICE_SOURCES
+        )
+        price_quality = _apply_previous_price_fallback(
+            price_map,
+            requested_price_keys,
+            previous_prices,
+        )
+        if provider_error_count:
+            reused = price_quality["reused"]
+            unpriced = sum(
+                1
+                for key in requested_price_keys
+                if str((price_map.get(key) or {}).get("source") or "") in _TRANSIENT_PRICE_SOURCES
+            )
+            details = []
+            if reused:
+                details.append(f"used last known prices for {reused} asset(s)")
+            if unpriced:
+                details.append(f"left {unpriced} affected asset(s) unpriced")
+            warning_parts.append(
+                "CoinGecko price requests failed; " + ", and ".join(details) + "."
+            )
         warning = " ".join(warning_parts) or None
 
         total_eur = 0.0
@@ -589,6 +677,7 @@ def sync_all(trigger: str = "manual") -> None:
         history_meta = {
             "sync_trigger": trigger_mode,
             "hidden_holdings_count": hidden_holdings_count,
+            "price_quality": price_quality,
             "totals": {
                 "coins_eur": total_eur,
                 "coins_usd": total_usd,
@@ -655,6 +744,7 @@ def sync_all(trigger: str = "manual") -> None:
                         price_eur=float(p.get("price_eur", 0.0) or 0.0),
                         price_usd=float(p.get("price_usd", 0.0) or 0.0),
                         price_key=price_key,
+                        ts=p.get("persisted_ts") or datetime.utcnow(),
                     )
                 )
             for row in synced_nfts:

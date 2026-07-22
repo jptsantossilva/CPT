@@ -109,7 +109,19 @@ def asset_icons(symbols: str = ""):
     items = [s.strip().upper() for s in symbols.split(",") if s.strip()]
     if not items:
         return {}
-    return services.prices.fetch_icon_urls(items)
+    valued_symbols = {
+        str(row.get("asset_symbol") or "").strip().upper()
+        for row in db.list_assets(include_hidden=False)
+        if float(row.get("price_usd") or 0.0) > 0
+        or float(row.get("price_eur") or 0.0) > 0
+    }
+    items = list(dict.fromkeys(item for item in items if item in valued_symbols))
+    if not items:
+        return {}
+    return services.prices.fetch_icon_urls(
+        items,
+        allow_remote=not services.sync.is_sync_running(),
+    )
 
 
 @app.get("/nfts")

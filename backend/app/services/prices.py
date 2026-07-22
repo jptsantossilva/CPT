@@ -13,6 +13,8 @@ Notes:
 import logging
 import os
 import time
+from email.utils import parsedate_to_datetime
+from threading import Lock
 from typing import Dict, List
 
 import httpx
@@ -46,6 +48,28 @@ _CONTRACT_PLATFORM_IDS = {
     "polygon": "polygon-pos",
 }
 
+# Frequently held, unambiguous contracts. These avoid loading the full
+# CoinGecko platform map for the common case; unknown contracts still use the
+# dynamic map below. Values are CoinGecko coin IDs, never fixed prices.
+_KNOWN_CONTRACT_IDS = {
+    # Ethereum
+    "ethereum:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": "usd-coin",
+    "ethereum:0xdac17f958d2ee523a2206206994597c13d831ec7": "tether",
+    "ethereum:0x6b175474e89094c44da98b954eedeac495271d0f": "dai",
+    "ethereum:0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2": "weth",
+    "ethereum:0x2260fac5e5542a773aa44fbcfedf7c193bc2c599": "wrapped-bitcoin",
+    # Base
+    "base:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": "usd-coin",
+    "base:0x0555e30da8f98308edb960aa94c0db47230d2b9c": "wrapped-bitcoin",
+    # Polygon PoS
+    "polygon-pos:0x3c499c542cef5e3811e1192ce70d8cc03d5c3359": "usd-coin",
+}
+
+_rate_limit_lock = Lock()
+_rate_limit_until = 0.0
+_icon_fetch_lock = Lock()
+_ICON_BATCH_SIZE = 100
+
 # Icon cache: symbol -> {ts, data}
 _icon_cache: Dict[str, dict] = {}
 _ICON_TTL = 12 * 3600
@@ -55,7 +79,37 @@ def _now() -> float:
     return time.time()
 
 
-def _load_coin_list(reload: bool = False) -> Dict[str, str]:
+def _cooldown_remaining() -> float:
+    with _rate_limit_lock:
+        return max(0.0, _rate_limit_until - _now())
+
+
+def _set_rate_limit_cooldown(response: httpx.Response, fallback: float) -> float:
+    """Record a process-wide CoinGecko cooldown and return its duration."""
+    global _rate_limit_until
+    delay = max(float(fallback), 1.0)
+    raw = str(response.headers.get("Retry-After") or "").strip()
+    if raw:
+        try:
+            delay = max(delay, float(raw))
+        except ValueError:
+            try:
+                retry_at = parsedate_to_datetime(raw).timestamp()
+                delay = max(delay, retry_at - _now())
+            except (TypeError, ValueError, OverflowError):
+                pass
+    with _rate_limit_lock:
+        _rate_limit_until = max(_rate_limit_until, _now() + delay)
+    return delay
+
+
+def _wait_for_rate_limit() -> None:
+    remaining = _cooldown_remaining()
+    if remaining > 0:
+        time.sleep(remaining)
+
+
+def _load_coin_list(reload: bool = False) -> Dict[str, str] | None:
     """Load coin list from CoinGecko and cache mapping symbol -> id."""
     if (
         not reload
@@ -66,14 +120,19 @@ def _load_coin_list(reload: bool = False) -> Dict[str, str]:
 
     url = f"{COINGECKO_BASE}/coins/list"
     try:
+        _wait_for_rate_limit()
         with httpx.Client(timeout=10) as cli:
             r = cli.get(url)
+            if r.status_code == 429:
+                _set_rate_limit_cooldown(r, 1)
             r.raise_for_status()
             coins = r.json()
     except Exception as e:
         log.warning("failed to fetch coin list from CoinGecko: %s", e)
-        # fallback to whatever we have cached (possibly empty)
-        return _coin_list_cache["data"]
+        # A populated stale cache is safer than treating a provider failure as
+        # proof that symbols do not exist.
+        cached = _coin_list_cache["data"]
+        return cached if cached else None
 
     mapping: Dict[str, str] = {}
     for c in coins:
@@ -131,18 +190,26 @@ def _load_symbol_mappings(reload: bool = False) -> Dict[str, str]:
     return mapping
 
 
-def _symbol_to_id(symbol: str) -> str | None:
+def _resolve_symbol_id(symbol: str) -> tuple[str | None, bool]:
     override = _load_symbol_mappings().get(symbol.upper())
     if override:
-        return override
+        return override, False
     mapping = _load_coin_list()
-    return mapping.get(symbol.lower())
+    if mapping is None:
+        return None, True
+    return mapping.get(symbol.lower()), False
 
 
-def _fetch_simple_price(ids: List[str]) -> Dict[str, dict]:
+def _symbol_to_id(symbol: str) -> str | None:
+    coin_id, _provider_failed = _resolve_symbol_id(symbol)
+    return coin_id
+
+
+def _fetch_simple_price(ids: List[str]) -> Dict[str, dict] | None:
     """Call /simple/price for given coin ids.
 
-    Returns CoinGecko response dict keyed by coin id.
+    Returns CoinGecko response keyed by coin id. ``None`` means the provider
+    failed; an empty dict is a successful response with no matching assets.
     """
     if not ids:
         return {}
@@ -153,12 +220,13 @@ def _fetch_simple_price(ids: List[str]) -> Dict[str, dict]:
     backoff = 1
     while attempts < 4:
         try:
+            _wait_for_rate_limit()
             with httpx.Client(timeout=10) as cli:
                 r = cli.get(url, params=params)
                 if r.status_code == 429:
                     attempts += 1
-                    log.warning("CoinGecko rate limited, sleeping %s seconds", backoff)
-                    time.sleep(backoff)
+                    delay = _set_rate_limit_cooldown(r, backoff)
+                    log.warning("CoinGecko rate limited, retrying after %.1f seconds", delay)
                     backoff *= 2
                     continue
                 r.raise_for_status()
@@ -172,7 +240,7 @@ def _fetch_simple_price(ids: List[str]) -> Dict[str, dict]:
             backoff *= 2
 
     log.error("failed to fetch prices from CoinGecko after retries")
-    return {}
+    return None
 
 
 def _load_contract_id_map(reload: bool = False) -> Dict[str, str] | None:
@@ -194,12 +262,13 @@ def _load_contract_id_map(reload: bool = False) -> Dict[str, str] | None:
     backoff = 1
     while attempts < 4:
         try:
+            _wait_for_rate_limit()
             with httpx.Client(timeout=30) as cli:
                 response = cli.get(url, params={"include_platform": "true"})
                 if response.status_code == 429:
                     attempts += 1
-                    log.warning("CoinGecko contract map rate limited, sleeping %s seconds", backoff)
-                    time.sleep(backoff)
+                    delay = _set_rate_limit_cooldown(response, backoff)
+                    log.warning("CoinGecko contract map rate limited, retrying after %.1f seconds", delay)
                     backoff *= 2
                     continue
                 response.raise_for_status()
@@ -278,18 +347,18 @@ def fetch_evm_token_prices(tokens: List[dict]) -> Dict[str, dict]:
     if not pending:
         return out
 
-    contract_ids = _load_contract_id_map()
-    if contract_ids is None:
-        for price_key in pending:
-            entry = {
-                "price_eur": 0.0,
-                "price_usd": 0.0,
-                "ts": now,
-                "source": "coingecko_contract_error",
-            }
-            out[price_key] = entry
-            _contract_price_cache[price_key] = {"ts": now, "data": entry}
-        return out
+    contract_ids = dict(_KNOWN_CONTRACT_IDS)
+    needs_dynamic_map = any(
+        f"{platform}:{contract}" not in contract_ids
+        for platform, contract in pending.values()
+    )
+    dynamic_map_failed = False
+    if needs_dynamic_map:
+        dynamic_ids = _load_contract_id_map()
+        if dynamic_ids is None:
+            dynamic_map_failed = True
+        else:
+            contract_ids.update(dynamic_ids)
 
     price_keys_by_id: Dict[str, List[str]] = {}
     for price_key, (platform, contract) in pending.items():
@@ -301,16 +370,20 @@ def fetch_evm_token_prices(tokens: List[dict]) -> Dict[str, dict]:
             "price_eur": 0.0,
             "price_usd": 0.0,
             "ts": now,
-            "source": "coingecko_contract_missing",
+            "source": (
+                "coingecko_contract_error"
+                if dynamic_map_failed
+                else "coingecko_contract_missing"
+            ),
         }
         out[price_key] = entry
         _contract_price_cache[price_key] = {"ts": now, "data": entry}
 
     if price_keys_by_id:
         price_response = _fetch_simple_price(list(price_keys_by_id))
-        provider_failed = not price_response
+        provider_failed = price_response is None
         for coin_id, price_keys in price_keys_by_id.items():
-            data = price_response.get(coin_id)
+            data = price_response.get(coin_id) if price_response is not None else None
             for price_key in price_keys:
                 if isinstance(data, dict):
                     entry = {
@@ -332,8 +405,8 @@ def fetch_evm_token_prices(tokens: List[dict]) -> Dict[str, dict]:
     return out
 
 
-def _fetch_coin_markets(ids: List[str]) -> Dict[str, dict]:
-    """Call /coins/markets for coin ids and return dict keyed by id."""
+def _fetch_coin_markets(ids: List[str]) -> Dict[str, dict] | None:
+    """Fetch one non-essential icon batch; fail fast on provider errors."""
     if not ids:
         return {}
 
@@ -345,33 +418,21 @@ def _fetch_coin_markets(ids: List[str]) -> Dict[str, dict]:
         "page": 1,
         "sparkline": "false",
     }
-    attempts = 0
-    backoff = 1
-    while attempts < 4:
-        try:
-            with httpx.Client(timeout=10) as cli:
-                r = cli.get(url, params=params)
-                if r.status_code == 429:
-                    attempts += 1
-                    log.warning("CoinGecko rate limited (icons), sleeping %s seconds", backoff)
-                    time.sleep(backoff)
-                    backoff *= 2
-                    continue
-                r.raise_for_status()
-                rows = r.json()
-                return {str(row.get("id")): row for row in rows}
-        except Exception as e:
-            attempts += 1
-            log.warning(
-                "error fetching market/icon data from CoinGecko (attempt %s): %s",
-                attempts,
-                e,
-            )
-            time.sleep(backoff)
-            backoff *= 2
-
-    log.error("failed to fetch market/icon data from CoinGecko after retries")
-    return {}
+    if _cooldown_remaining() > 0:
+        return None
+    try:
+        with httpx.Client(timeout=10) as cli:
+            r = cli.get(url, params=params)
+            if r.status_code == 429:
+                delay = _set_rate_limit_cooldown(r, 1)
+                log.warning("CoinGecko rate limited (icons), cooldown %.1f seconds", delay)
+                return None
+            r.raise_for_status()
+            rows = r.json()
+            return {str(row.get("id")): row for row in rows if isinstance(row, dict)}
+    except Exception as exc:
+        log.warning("error fetching market/icon data from CoinGecko: %s", exc)
+        return None
 
 
 def fetch_prices(symbols: List[str]) -> Dict[str, dict]:
@@ -392,21 +453,27 @@ def fetch_prices(symbols: List[str]) -> Dict[str, dict]:
             out[s] = cached["data"].copy()
             continue
 
-        cid = _symbol_to_id(s)
+        cid, lookup_failed = _resolve_symbol_id(s)
         if cid:
             symbol_to_id[s] = cid
             to_query_ids.append(cid)
         else:
             # no mapping found; return 0 prices for now
-            out[s] = {"price_eur": 0.0, "price_usd": 0.0, "ts": now, "source": "none"}
+            out[s] = {
+                "price_eur": 0.0,
+                "price_usd": 0.0,
+                "ts": now,
+                "source": "coingecko_error" if lookup_failed else "none",
+            }
 
     # Query CoinGecko for ids (deduplicate ids)
     ids = list(dict.fromkeys(to_query_ids))
     if ids:
         cg_resp = _fetch_simple_price(ids)
+        provider_failed = cg_resp is None
         # map back to symbols
         for sym, cid in symbol_to_id.items():
-            data = cg_resp.get(cid)
+            data = cg_resp.get(cid) if cg_resp is not None else None
             if data:
                 entry = {
                     "price_eur": float(data.get("eur", 0.0)),
@@ -419,7 +486,7 @@ def fetch_prices(symbols: List[str]) -> Dict[str, dict]:
                     "price_eur": 0.0,
                     "price_usd": 0.0,
                     "ts": now,
-                    "source": "coingecko_missing",
+                    "source": "coingecko_error" if provider_failed else "coingecko_missing",
                 }
 
             out[sym] = entry
@@ -429,32 +496,60 @@ def fetch_prices(symbols: List[str]) -> Dict[str, dict]:
     return out
 
 
-def fetch_icon_urls(symbols: List[str]) -> Dict[str, str]:
+def fetch_cached_icon_urls(symbols: List[str]) -> Dict[str, str]:
+    """Return fresh process-cached icon URLs without external calls."""
+    now = _now()
+    out: Dict[str, str] = {}
+    for sym in symbols:
+        key = str(sym or "").strip().upper()
+        cached = _icon_cache.get(key)
+        if not key or not cached or now - cached["ts"] >= _ICON_TTL:
+            continue
+        icon_url = str(cached.get("data") or "")
+        if icon_url:
+            out[key] = icon_url
+    return out
+
+
+def fetch_icon_urls(symbols: List[str], *, allow_remote: bool = True) -> Dict[str, str]:
     """Fetch icon URLs for symbols using CoinGecko ids.
 
     Returns mapping symbol -> image URL.
     """
-    out: Dict[str, str] = {}
-    now = _now()
-    symbol_to_id: Dict[str, str] = {}
+    normalized = list(dict.fromkeys(str(sym or "").strip().upper() for sym in symbols if str(sym or "").strip()))
+    out = fetch_cached_icon_urls(normalized)
+    if not allow_remote or _cooldown_remaining() > 0:
+        return out
 
-    for sym in symbols:
-        key = sym.upper()
-        cached = _icon_cache.get(key)
-        if cached and now - cached["ts"] < _ICON_TTL:
-            icon_url = str(cached.get("data") or "")
-            if icon_url:
-                out[key] = icon_url
-            continue
+    # Single-flight protection: a concurrent request waits for the first one
+    # and then reuses its positive and negative cache entries.
+    with _icon_fetch_lock:
+        now = _now()
+        out = fetch_cached_icon_urls(normalized)
+        symbol_to_id: Dict[str, str] = {}
+        for key in normalized:
+            cached = _icon_cache.get(key)
+            if cached and now - cached["ts"] < _ICON_TTL:
+                continue
+            cid, lookup_failed = _resolve_symbol_id(key)
+            if cid:
+                symbol_to_id[key] = cid
+            elif not lookup_failed:
+                _icon_cache[key] = {"ts": now, "data": ""}
 
-        cid = _symbol_to_id(sym)
-        if cid:
-            symbol_to_id[key] = cid
+        ids = list(dict.fromkeys(symbol_to_id.values()))
+        market_data: Dict[str, dict] = {}
+        provider_failed = False
+        for offset in range(0, len(ids), _ICON_BATCH_SIZE):
+            batch = _fetch_coin_markets(ids[offset : offset + _ICON_BATCH_SIZE])
+            if batch is None:
+                provider_failed = True
+                break
+            market_data.update(batch)
 
-    ids = list(dict.fromkeys(symbol_to_id.values()))
-    if ids:
-        market_data = _fetch_coin_markets(ids)
         for sym, cid in symbol_to_id.items():
+            if provider_failed and cid not in market_data:
+                continue
             row = market_data.get(cid) or {}
             icon_url = str(row.get("image") or "")
             if icon_url:
