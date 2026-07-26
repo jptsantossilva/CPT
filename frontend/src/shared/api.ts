@@ -109,6 +109,55 @@ export type PortfolioHistoryResponse = {
   nft_labels: Record<string, string>
 }
 
+export type FiatCashFlow = {
+  id: number
+  flow_type: 'deposit' | 'withdrawal'
+  occurred_on: string
+  original_currency: 'EUR' | 'USD'
+  original_amount: string
+  counter_amount: string
+  amount_eur: string
+  amount_usd: string
+  counterparty_type: 'bank' | 'person'
+  counterparty_name: string
+  notes?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type FiatCashFlowPayload = Omit<
+  FiatCashFlow,
+  'id' | 'amount_eur' | 'amount_usd' | 'created_at' | 'updated_at'
+>
+
+export type CurrencyPerformance = {
+  deposits: string
+  withdrawals: string
+  net_invested: string
+  current_portfolio: string | null
+  pnl: string | null
+  status: 'gain' | 'loss' | 'breakeven' | 'unavailable'
+}
+
+export type CounterpartyPerformance = {
+  counterparty_type: 'bank' | 'person'
+  counterparty_name: string
+  eur: CurrencyPerformance
+  usd: CurrencyPerformance
+}
+
+export type PortfolioPerformance = {
+  snapshot: { id?: number | null; timestamp: string } | null
+  eur: CurrencyPerformance
+  usd: CurrencyPerformance
+  pending: {
+    count: number
+    eur: CurrencyPerformance
+    usd: CurrencyPerformance
+  }
+  by_counterparty: CounterpartyPerformance[]
+}
+
 async function parseResponse<T>(response: Response): Promise<T> {
   const text = await response.text()
   let data: any = null
@@ -281,6 +330,26 @@ export async function updateSnapshotValidity(snapshotId: number, isValid: boolea
 
 export async function fetchPortfolioHistory(limit = 800) {
   return apiGet<PortfolioHistoryResponse>(`/history/portfolio?limit=${encodeURIComponent(String(limit))}`)
+}
+
+export async function listFiatCashFlows() {
+  return apiGet<FiatCashFlow[]>('/admin/fiat-cashflows/')
+}
+
+export async function createFiatCashFlow(payload: FiatCashFlowPayload) {
+  return apiPost<FiatCashFlow>('/admin/fiat-cashflows/', payload)
+}
+
+export async function updateFiatCashFlow(cashFlowId: number, payload: FiatCashFlowPayload) {
+  return apiPut<FiatCashFlow>(`/admin/fiat-cashflows/${cashFlowId}`, payload)
+}
+
+export async function deleteFiatCashFlow(cashFlowId: number) {
+  return apiDelete<{ deleted: number }>(`/admin/fiat-cashflows/${cashFlowId}`)
+}
+
+export async function fetchPortfolioPerformance() {
+  return apiGet<PortfolioPerformance>('/portfolio/performance')
 }
 
 export async function listNotifications() {

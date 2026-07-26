@@ -10,6 +10,7 @@ import KeyboardDoubleArrowLeftRoundedIcon from '@mui/icons-material/KeyboardDoub
 import KeyboardDoubleArrowRightRoundedIcon from '@mui/icons-material/KeyboardDoubleArrowRightRounded'
 import LightModeRoundedIcon from '@mui/icons-material/LightModeRounded'
 import PaidRoundedIcon from '@mui/icons-material/PaidRounded'
+import SavingsRoundedIcon from '@mui/icons-material/SavingsRounded'
 import { Box, Button, CssBaseline, IconButton, Paper, Stack, ThemeProvider, Tooltip, Typography } from '@mui/material'
 import Assets from './pages/Assets'
 import Dashboard from './pages/Dashboard'
@@ -20,13 +21,15 @@ import changelog from '../../CHANGELOG.md?raw'
 
 const AccountsPage = React.lazy(() => import('./pages/Admin'))
 const AutomationPage = React.lazy(() => import('./pages/Automation'))
+const InvestmentsPage = React.lazy(() => import('./pages/Investments'))
 const SettingsPage = React.lazy(() => import('./pages/Settings'))
 type Theme = AppMode
 type CurrencyMode = 'EUR' | 'USD'
+type Route = 'dashboard'|'assets'|'nfts'|'investments'|'accounts'|'automation'|'settings'
 const APP_VERSION = changelog.match(/^## \[(\d{4}\.\d{2}\.\d{2})\]/m)?.[1] ?? 'unknown'
 
 export default function App(){
-  const [route, setRoute] = React.useState<'dashboard'|'assets'|'nfts'|'accounts'|'automation'|'settings'>('dashboard')
+  const [route, setRoute] = React.useState<Route>('dashboard')
   const [theme, setTheme] = React.useState<Theme>(() => {
     const saved = window.localStorage.getItem('cpt_theme')
     if (saved === 'dark' || saved === 'light') return saved
@@ -41,10 +44,11 @@ export default function App(){
     const saved = window.localStorage.getItem('cpt_sidebar_collapsed')
     return saved === '1'
   })
-  const navItems: Array<{ key: 'dashboard' | 'assets' | 'nfts' | 'accounts' | 'automation' | 'settings'; label: string; icon: React.ReactNode }> = [
+  const navItems: Array<{ key: Route; label: string; icon: React.ReactNode }> = [
     { key: 'dashboard', label: 'Dashboard', icon: <DashboardRoundedIcon fontSize="small" /> },
     { key: 'assets', label: 'Coins', icon: <PaidRoundedIcon fontSize="small" /> },
     { key: 'nfts', label: 'NFTs', icon: <CollectionsRoundedIcon fontSize="small" /> },
+    { key: 'investments', label: 'Investments', icon: <SavingsRoundedIcon fontSize="small" /> },
     { key: 'accounts', label: 'Accounts', icon: <AdminPanelSettingsRoundedIcon fontSize="small" /> },
     { key: 'automation', label: 'Sync & Notifications', icon: <SettingsSuggestRoundedIcon fontSize="small" /> },
     { key: 'settings', label: 'Settings', icon: <TuneRoundedIcon fontSize="small" /> },
@@ -263,7 +267,12 @@ export default function App(){
               </Paper>
 
               <Box sx={{ flex: 1, minWidth: 0 }}>
-                {route === 'dashboard' ? <Dashboard currencyMode={currencyMode} /> : route === 'assets' ? <Assets/> : route === 'nfts' ? <Nfts/> : <></>}
+                {route === 'dashboard' ? <Dashboard currencyMode={currencyMode} onOpenInvestments={() => setRoute('investments')} /> : route === 'assets' ? <Assets/> : route === 'nfts' ? <Nfts/> : <></>}
+                {route === 'investments' ? (
+                  <React.Suspense fallback={<Typography color="text.secondary">Loading Investments...</Typography>}>
+                    <InvestmentsPage currencyMode={currencyMode} />
+                  </React.Suspense>
+                ) : null}
                 {route === 'accounts' ? (
                   <React.Suspense fallback={<Typography color="text.secondary">Loading Accounts...</Typography>}>
                     <AccountsPage />

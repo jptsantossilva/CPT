@@ -134,10 +134,39 @@ Main admin endpoints:
 Message includes:
 - total portfolio value
 - variation vs last successful notification
+- global PnL when FIAT cash flows establish an invested-capital baseline
 - top 5 movers up and top 5 movers down (coins + NFTs)
 
 Detailed technical design:
 - `backend/README_NOTIFICATIONS.md`
+
+### FIAT Investments and Portfolio PnL
+
+The **Investments** page records FIAT added to or withdrawn from the tracked
+crypto portfolio. Each movement stores its date, original EUR/USD amount, the
+historical equivalent in the other currency, and the bank or person associated
+with it.
+
+The dashboard uses the latest valid portfolio snapshot and calculates, in the
+selected currency:
+
+- `Net invested = FIAT added - FIAT withdrawn`
+- `Global PnL = current portfolio + FIAT withdrawn - FIAT added`
+
+When no withdrawals exist, global PnL is entirely unrealized and is labelled
+**Unrealized PnL**. Once a withdrawal exists, the app labels it **Global PnL**:
+realized and unrealized PnL cannot be separated without the cost basis of the
+assets sold.
+
+Cash flows dated after the latest snapshot are shown as pending and excluded
+from PnL until another sync is completed. Banks and people are cash-flow
+labels only; the app does not allocate portfolio ownership or PnL to them.
+
+Main endpoints:
+
+- `GET/POST /admin/fiat-cashflows/`
+- `PUT/DELETE /admin/fiat-cashflows/{id}`
+- `GET /portfolio/performance`
 
 
 

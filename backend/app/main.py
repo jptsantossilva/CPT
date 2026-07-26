@@ -4,8 +4,8 @@ from pydantic import BaseModel
 from sqlmodel import select
 
 from . import db, services
-from .api import binance_accounts, notifications, price_mappings, snapshots, sync_schedule, wallets
-from .models import Snapshot
+from .api import binance_accounts, fiat_cashflows, notifications, price_mappings, snapshots, sync_schedule, wallets
+from .models import FiatCashFlow, Snapshot
 
 app = FastAPI(title="Crypto Portfolio Tracker")
 
@@ -98,6 +98,22 @@ def portfolio_history(limit: int = 800):
     return services.history.build_portfolio_history(rows)
 
 
+@app.get("/portfolio/performance")
+def portfolio_performance():
+    with db.get_session() as s:
+        snapshot = s.exec(
+            select(Snapshot)
+            .where(Snapshot.is_valid == True)  # noqa: E712
+            .order_by(Snapshot.timestamp.desc())
+            .limit(1)
+        ).first()
+        cashflows = s.exec(
+            select(FiatCashFlow)
+            .order_by(FiatCashFlow.occurred_on.asc(), FiatCashFlow.id.asc())
+        ).all()
+    return services.fiat.build_performance(snapshot, cashflows)
+
+
 @app.get("/assets")
 def assets(include_hidden: bool = False):
     return db.list_assets(include_hidden=include_hidden)
@@ -167,3 +183,4 @@ app.include_router(sync_schedule.router)
 app.include_router(notifications.router)
 app.include_router(price_mappings.router)
 app.include_router(snapshots.router)
+app.include_router(fiat_cashflows.router)

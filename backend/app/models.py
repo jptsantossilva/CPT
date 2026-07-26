@@ -1,6 +1,8 @@
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 from typing import List, Optional
 
+from sqlalchemy import Column, Numeric
 from sqlmodel import Field, Relationship, SQLModel
 
 
@@ -59,6 +61,27 @@ class Snapshot(SQLModel, table=True):
     is_valid: bool = True
     invalid_reason: Optional[str] = None
     invalidated_at: Optional[datetime] = None
+
+
+class FiatCashFlow(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    flow_type: str  # deposit|withdrawal
+    occurred_on: date
+    original_currency: str  # EUR|USD
+    original_amount: Decimal = Field(
+        sa_column=Column(Numeric(20, 2), nullable=False)
+    )
+    amount_eur: Decimal = Field(
+        sa_column=Column(Numeric(20, 2), nullable=False)
+    )
+    amount_usd: Decimal = Field(
+        sa_column=Column(Numeric(20, 2), nullable=False)
+    )
+    counterparty_type: str  # bank|person
+    counterparty_name: str
+    notes: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 class NFTCollection(SQLModel, table=True):

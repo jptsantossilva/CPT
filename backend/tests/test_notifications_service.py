@@ -1,7 +1,7 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
-from backend.app.models import NotificationAnchor, NotificationConfig
+from backend.app.models import NotificationAnchor, NotificationConfig, Snapshot
 from backend.app.services import notifications
 
 
@@ -43,6 +43,59 @@ def test_render_message_first_run_contains_na():
     assert "n/a -> 25 Mar 14:30 UTC · n/a" in body
     assert "1,080.00" in body_html
     assert "$1,080.00" in body_html
+
+
+def test_render_message_includes_global_pnl_in_plain_and_html_email():
+    _subject, body, body_html = notifications._render_message(
+        currency="EUR",
+        current_total=1250.0,
+        base_total=1000.0,
+        current_sync_ts=datetime(2026, 3, 25, 14, 30, tzinfo=timezone.utc),
+        previous_sync_ts=datetime(2026, 3, 24, 14, 30, tzinfo=timezone.utc),
+        top_up=[],
+        top_down=[],
+        global_pnl=-125.5,
+        global_pnl_status="loss",
+    )
+    assert "Global PnL: -€125.50" in body
+    assert "Global PnL:" in body_html
+    assert "-€125.50" in body_html
+
+
+def test_global_pnl_for_notification_uses_the_notification_snapshot(monkeypatch):
+    cashflow = SimpleNamespace(
+        flow_type="deposit",
+        occurred_on=date(2026, 3, 1),
+        amount_eur="1000.00",
+        amount_usd="1100.00",
+        counterparty_type="bank",
+        counterparty_name="Bank",
+    )
+
+    class _Result:
+        def all(self):
+            return [cashflow]
+
+    class _DummySession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def exec(self, _query):
+            return _Result()
+
+    snapshot = Snapshot(
+        timestamp=datetime(2026, 3, 2, 10, 0, tzinfo=timezone.utc),
+        total_eur=1200.0,
+        total_usd=1320.0,
+    )
+    monkeypatch.setattr(notifications.db, "get_session", lambda: _DummySession())
+
+    pnl, status = notifications._global_pnl_for_snapshot(snapshot, "USD")
+    assert pnl == 220.0
+    assert status == "gain"
 
 
 def test_compute_next_run_minutes_and_weekly():

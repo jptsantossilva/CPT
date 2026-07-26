@@ -7,9 +7,11 @@ import {
   fetchLatestSnapshot,
   fetchNfts,
   fetchPortfolioHistory,
+  fetchPortfolioPerformance,
   fetchSyncStatus,
   syncNow,
   type PortfolioHistoryResponse,
+  type PortfolioPerformance,
   type SyncStatus,
 } from '../shared/api'
 import { formatEur, formatUsd } from '../shared/format'
@@ -170,12 +172,19 @@ function AssetIcon({ symbol, iconUrl, size = 22 }: { symbol: string; iconUrl?: s
 
 type CurrencyMode = 'EUR' | 'USD'
 
-export default function Dashboard({ currencyMode }: { currencyMode: CurrencyMode }) {
+export default function Dashboard({
+  currencyMode,
+  onOpenInvestments,
+}: {
+  currencyMode: CurrencyMode
+  onOpenInvestments: () => void
+}) {
   const [snapshot, setSnapshot] = React.useState<any>(null)
   const [assets, setAssets] = React.useState<any[]>([])
   const [nfts, setNfts] = React.useState<any[]>([])
   const [assetIcons, setAssetIcons] = React.useState<Record<string, string>>({})
   const [portfolioHistory, setPortfolioHistory] = React.useState<PortfolioHistoryResponse | null>(null)
+  const [portfolioPerformance, setPortfolioPerformance] = React.useState<PortfolioPerformance | null>(null)
   const [historyRange, setHistoryRange] = React.useState<HistoryRangeKey>('1M')
   const [showTotals, setShowTotals] = React.useState(true)
   const [showCoinsLines, setShowCoinsLines] = React.useState(false)
@@ -197,6 +206,9 @@ export default function Dashboard({ currencyMode }: { currencyMode: CurrencyMode
   const totalEur = safeNumber(snapshotMeta?.totals?.portfolio_eur, safeNumber(snapshot?.total_eur))
   const totalUsd = safeNumber(snapshotMeta?.totals?.portfolio_usd, safeNumber(snapshot?.total_usd))
   const totalSelected = currencyMode === 'EUR' ? totalEur : totalUsd
+  const performanceSelected = portfolioPerformance
+    ? (currencyMode === 'EUR' ? portfolioPerformance.eur : portfolioPerformance.usd)
+    : null
   const [syncLoading, setSyncLoading] = React.useState(false)
   const [syncStatus, setSyncStatus] = React.useState<SyncStatus | null>(null)
   const [notice, setNotice] = React.useState<Notice>(null)
@@ -228,12 +240,19 @@ export default function Dashboard({ currencyMode }: { currencyMode: CurrencyMode
   }
 
   React.useEffect(() => {
-    Promise.all([fetchLatestSnapshot(), fetchAssets(), fetchNfts(), fetchPortfolioHistory()])
-      .then(([latestSnapshot, latestAssets, latestNfts, history]) => {
+    Promise.all([
+      fetchLatestSnapshot(),
+      fetchAssets(),
+      fetchNfts(),
+      fetchPortfolioHistory(),
+      fetchPortfolioPerformance().catch(() => null),
+    ])
+      .then(([latestSnapshot, latestAssets, latestNfts, history, performance]) => {
         setSnapshot(latestSnapshot)
         setAssets(latestAssets || [])
         setNfts(latestNfts || [])
         setPortfolioHistory(history || { points: [], coin_labels: {}, nft_labels: {} })
+        setPortfolioPerformance(performance)
       })
       .catch(() => {})
   }, [])
@@ -276,16 +295,18 @@ export default function Dashboard({ currencyMode }: { currencyMode: CurrencyMode
         setSyncLoading(false)
         if (status.status === 'completed') {
           setNotice({ type: 'success', text: formatSyncMessage(status) })
-          const [latestSnap, latestAssets, latestNfts, history] = await Promise.all([
+          const [latestSnap, latestAssets, latestNfts, history, performance] = await Promise.all([
             fetchLatestSnapshot(),
             fetchAssets(),
             fetchNfts(),
             fetchPortfolioHistory(),
+            fetchPortfolioPerformance().catch(() => null),
           ])
           setSnapshot(latestSnap)
           setAssets(latestAssets)
           setNfts(latestNfts)
           setPortfolioHistory(history || { points: [], coin_labels: {}, nft_labels: {} })
+          setPortfolioPerformance(performance)
         } else if (status.status === 'failed') {
           setNotice({ type: 'error', text: status.message || 'Sync failed.' })
         }
@@ -910,6 +931,56 @@ export default function Dashboard({ currencyMode }: { currencyMode: CurrencyMode
               </Stack>
             </Grid>
           </Grid>
+        </CardContent>
+      </Card>
+
+      <Card variant="outlined">
+        <CardContent>
+          <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} justifyContent="space-between" alignItems={{ xs: 'stretch', md: 'center' }}>
+            <Box sx={{ flex: 1 }}>
+              <Typography variant="h6">Investment Performance</Typography>
+              {performanceSelected?.pnl == null ? (
+                <Typography variant="body2" color="text.secondary">
+                  Add FIAT cash flows to compare invested capital with the latest portfolio snapshot.
+                </Typography>
+              ) : (
+                <Grid container spacing={2} sx={{ mt: 0.25 }}>
+                  <Grid item xs={12} sm={4}>
+                    <Typography variant="overline" color="text.secondary">Net Invested</Typography>
+                    <Typography variant="h6">
+                      {formatCurrencyWithSymbol(Number(performanceSelected.net_invested), currencyMode)}
+                    </Typography>
+                  </Grid>
+                  <Grid item xs={12} sm={4}>
+                    <Typography variant="overline" color="text.secondary">
+                      {Number(performanceSelected.withdrawals) > 0 ? 'Global PnL' : 'Unrealized PnL'}
+                    </Typography>
+                    <Typography
+                      variant="h6"
+                      color={
+                        performanceSelected.status === 'gain'
+                          ? 'success.main'
+                          : performanceSelected.status === 'loss'
+                            ? 'error.main'
+                            : 'text.primary'
+                      }
+                    >
+                      {formatCurrencyWithSymbol(Number(performanceSelected.pnl), currencyMode)}
+                    </Typography>
+                  </Grid>
+                  <Grid item xs={12} sm={4}>
+                    <Typography variant="overline" color="text.secondary">FIAT Withdrawn</Typography>
+                    <Typography variant="h6">
+                      {formatCurrencyWithSymbol(Number(performanceSelected.withdrawals), currencyMode)}
+                    </Typography>
+                  </Grid>
+                </Grid>
+              )}
+            </Box>
+            <Button variant="outlined" onClick={onOpenInvestments}>
+              Manage Investments
+            </Button>
+          </Stack>
         </CardContent>
       </Card>
 
