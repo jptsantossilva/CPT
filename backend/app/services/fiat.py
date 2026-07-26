@@ -72,6 +72,9 @@ def _currency_summary(
         if current is not None and deposits > 0
         else None
     )
+    # This is the return relative to capital that remains invested. It is not
+    # meaningful once withdrawals exceed contributions, so leave it unavailable.
+    pnl_pct = (pnl / net_invested * 100) if pnl is not None and net_invested > 0 else None
     if pnl is None:
         status = "unavailable"
     elif pnl > 0:
@@ -86,6 +89,7 @@ def _currency_summary(
         "net_invested": money_string(net_invested),
         "current_portfolio": money_string(current) if current is not None else None,
         "pnl": money_string(pnl) if pnl is not None else None,
+        "pnl_pct": money_string(pnl_pct) if pnl_pct is not None else None,
         "status": status,
     }
 

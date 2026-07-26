@@ -136,6 +136,7 @@ export type CurrencyPerformance = {
   net_invested: string
   current_portfolio: string | null
   pnl: string | null
+  pnl_pct: string | null
   status: 'gain' | 'loss' | 'breakeven' | 'unavailable'
 }
 

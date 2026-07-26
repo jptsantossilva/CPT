@@ -8,7 +8,7 @@ All notable changes to this project will be documented in this file.
 - Added an Investments area for recording dated EUR/USD contributions and withdrawals, including historical currency equivalents and bank/person counterparties.
 - Added portfolio performance reporting for FIAT added, FIAT withdrawn, net invested, current portfolio value, and global gain/loss based on the latest valid snapshot.
 - Added pending cash-flow handling, counterparty cash-flow summaries, Dashboard PnL indicators, and CRUD APIs for FIAT movements.
-- Added global PnL to notification email and preview content, calculated against the same sync snapshot used for the notification.
+- Added global PnL and its percentage return on net invested capital to notification email and preview content, calculated against the same sync snapshot used for the notification.
 
 ### Changed
 - Labelled performance as unrealized PnL only while no withdrawals exist; after withdrawals, the UI uses global PnL because realized and unrealized results require asset cost-basis data to separate accurately.

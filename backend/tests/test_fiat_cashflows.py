@@ -159,6 +159,7 @@ def test_performance_uses_full_snapshot_total_and_excludes_pending_flows():
         "net_invested": "700.00",
         "current_portfolio": "1000.00",
         "pnl": "300.00",
+        "pnl_pct": "42.86",
         "status": "gain",
     }
     assert result["usd"]["pnl"] == "330.00"
@@ -180,6 +181,7 @@ def test_performance_loss_breakeven_and_no_snapshot():
         [deposit],
     )
     assert loss["eur"]["pnl"] == "-100.00"
+    assert loss["eur"]["pnl_pct"] == "-10.00"
     assert loss["eur"]["status"] == "loss"
 
     breakeven = fiat.build_performance(
@@ -200,6 +202,7 @@ def test_performance_loss_breakeven_and_no_snapshot():
         [],
     )
     assert no_baseline["eur"]["pnl"] is None
+    assert no_baseline["eur"]["pnl_pct"] is None
     assert no_baseline["eur"]["status"] == "unavailable"
 
 
@@ -224,6 +227,7 @@ def test_performance_supports_withdrawals_above_initial_contributions():
     )
     assert result["eur"]["net_invested"] == "-200.00"
     assert result["eur"]["pnl"] == "250.00"
+    assert result["eur"]["pnl_pct"] is None
     assert result["eur"]["status"] == "gain"
 
 

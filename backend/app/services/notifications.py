@@ -355,10 +355,13 @@ def _load_latest_sync_pair() -> tuple[Snapshot | None, Snapshot | None]:
     return current, previous
 
 
-def _global_pnl_for_snapshot(snapshot: Snapshot | None, currency: str) -> tuple[float | None, str]:
+def _global_pnl_for_snapshot(
+    snapshot: Snapshot | None,
+    currency: str,
+) -> tuple[float | None, float | None, str]:
     """Calculate PnL against the exact snapshot used for the notification."""
     if snapshot is None:
-        return None, "unavailable"
+        return None, None, "unavailable"
     try:
         with db.get_session() as s:
             cashflows = s.exec(
@@ -367,12 +370,19 @@ def _global_pnl_for_snapshot(snapshot: Snapshot | None, currency: str) -> tuple[
         performance = fiat.build_performance(snapshot, cashflows)
         selected = performance["usd" if str(currency or "").upper() == "USD" else "eur"]
         raw_pnl = selected.get("pnl")
-        return (float(raw_pnl), str(selected.get("status") or "unavailable")) if raw_pnl is not None else (None, "unavailable")
+        raw_pnl_pct = selected.get("pnl_pct")
+        if raw_pnl is None:
+            return None, None, "unavailable"
+        return (
+            float(raw_pnl),
+            float(raw_pnl_pct) if raw_pnl_pct is not None else None,
+            str(selected.get("status") or "unavailable"),
+        )
     except Exception:
         # Notification delivery must remain available if a legacy database has
         # not yet created the FIAT cash-flow table or its data is unavailable.
         log.exception("failed to calculate global PnL for notification")
-        return None, "unavailable"
+        return None, None, "unavailable"
 
 
 def _load_base_snapshot(notification_id: int) -> tuple[NotificationSnapshot | None, dict[str, dict[str, Any]]]:
@@ -492,6 +502,7 @@ def _render_message(
     top_up: list[dict[str, Any]],
     top_down: list[dict[str, Any]],
     global_pnl: float | None = None,
+    global_pnl_pct: float | None = None,
     global_pnl_status: str = "unavailable",
 ) -> tuple[str, str, str]:
     curr = "USD" if str(currency or "").upper() == "USD" else "EUR"
@@ -524,7 +535,12 @@ def _render_message(
         ),
         f"{previous_sync_short} -> {current_sync_short} · {sync_gap}",
         (
-            f"Global PnL: {'+' if global_pnl >= 0 else '-'}{curr_symbol}{abs(global_pnl):,.2f}"
+            (
+                f"Global PnL: {'+' if global_pnl >= 0 else '-'}{curr_symbol}{abs(global_pnl):,.2f} "
+                f"{'▲' if global_pnl >= 0 else '▼'} {global_pnl_pct:+.2f}%"
+                if global_pnl_pct is not None
+                else f"Global PnL: {'+' if global_pnl >= 0 else '-'}{curr_symbol}{abs(global_pnl):,.2f} (n/a)"
+            )
             if global_pnl is not None
             else "Global PnL: n/a (record FIAT cash flows to establish invested capital)"
         ),
@@ -595,6 +611,18 @@ def _render_message(
         if global_pnl is not None
         else "<span style=\"opacity:.72;\">n/a (record FIAT cash flows to establish invested capital)</span>"
     )
+    pnl_pct_html = (
+        _fmt_colored_pct(global_pnl_pct)
+        if global_pnl_pct is not None
+        else "<span style=\"opacity:.72;\">n/a</span>"
+    )
+    pnl_arrow = "▲" if global_pnl is not None and global_pnl >= 0 else "▼"
+    pnl_arrow_color = "#15803d" if global_pnl is not None and global_pnl >= 0 else "#b91c1c"
+    pnl_display_html = (
+        f"{pnl_html} <span style=\"color:{pnl_arrow_color};font-weight:700;font-size:13px;line-height:1.2;\">{pnl_arrow}</span> {pnl_pct_html}"
+        if global_pnl is not None
+        else pnl_html
+    )
 
     body_html = (
         "<div style=\"font-family:Arial,sans-serif;line-height:1.5;color:#111;\">"
@@ -618,7 +646,7 @@ def _render_message(
         f"<p style=\"margin:0 0 14px 0;color:#666;font-size:12px;\">{escape(previous_sync_short)} -&gt; {escape(current_sync_short)} "
         f"&middot; {escape(sync_gap)}</p>"
         "<p style=\"margin:0 0 14px 0;font-size:15px;\"><strong>Global PnL:</strong> "
-        f"{pnl_html}</p>"
+        f"{pnl_display_html}</p>"
         "<p style=\"margin:0 0 6px 0;font-size:15px;\"><strong>Top 5 up</strong></p>"
         f"<ol style=\"margin:0 0 12px 20px;padding:0;\">{top_up_html}</ol>"
         "<p style=\"margin:2px 0 6px 0;font-size:15px;\"><strong>Top 5 down</strong></p>"
@@ -851,7 +879,7 @@ def execute_notification(notification_id: int, reason: str = "scheduled") -> dic
 
     selected_currency = get_notification_currency()
     current_sync_snapshot, previous_sync_snapshot = _load_latest_sync_pair()
-    global_pnl, global_pnl_status = _global_pnl_for_snapshot(current_sync_snapshot, selected_currency)
+    global_pnl, global_pnl_pct, global_pnl_status = _global_pnl_for_snapshot(current_sync_snapshot, selected_currency)
     current_totals, current_assets = _extract_sync_snapshot_data(current_sync_snapshot)
     previous_totals, previous_assets = _extract_sync_snapshot_data(previous_sync_snapshot)
     current_total = float(
@@ -874,6 +902,7 @@ def execute_notification(notification_id: int, reason: str = "scheduled") -> dic
         top_up=top_up,
         top_down=top_down,
         global_pnl=global_pnl,
+        global_pnl_pct=global_pnl_pct,
         global_pnl_status=global_pnl_status,
     )
 
@@ -899,6 +928,7 @@ def execute_notification(notification_id: int, reason: str = "scheduled") -> dic
             "current_total_usd": float(current_totals["portfolio_usd"]),
             "current_snapshot_id": snapshot_id,
             "global_pnl": global_pnl,
+            "global_pnl_pct": global_pnl_pct,
             "global_pnl_status": global_pnl_status,
         },
         "sync_snapshots": {
@@ -1149,7 +1179,7 @@ def preview(notification_id: int) -> dict[str, Any]:
             raise KeyError("notification not found")
     selected_currency = get_notification_currency()
     current_sync_snapshot, previous_sync_snapshot = _load_latest_sync_pair()
-    global_pnl, global_pnl_status = _global_pnl_for_snapshot(current_sync_snapshot, selected_currency)
+    global_pnl, global_pnl_pct, global_pnl_status = _global_pnl_for_snapshot(current_sync_snapshot, selected_currency)
     current_totals, current_assets = _extract_sync_snapshot_data(current_sync_snapshot)
     previous_totals, previous_assets = _extract_sync_snapshot_data(previous_sync_snapshot)
     current_total = float(
@@ -1172,6 +1202,7 @@ def preview(notification_id: int) -> dict[str, Any]:
         top_up=top_up,
         top_down=top_down,
         global_pnl=global_pnl,
+        global_pnl_pct=global_pnl_pct,
         global_pnl_status=global_pnl_status,
     )
     return {
@@ -1186,6 +1217,7 @@ def preview(notification_id: int) -> dict[str, Any]:
         "current_total_eur": float(current_totals["portfolio_eur"]),
         "current_total_usd": float(current_totals["portfolio_usd"]),
         "global_pnl": global_pnl,
+        "global_pnl_pct": global_pnl_pct,
         "global_pnl_status": global_pnl_status,
         "current_sync_snapshot_id": int(current_sync_snapshot.id) if current_sync_snapshot and current_sync_snapshot.id is not None else None,
         "previous_sync_snapshot_id": int(previous_sync_snapshot.id) if previous_sync_snapshot and previous_sync_snapshot.id is not None else None,
