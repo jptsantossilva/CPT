@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2026.09.25]
+
+### Added
+- Added read-only Spot/cash monitoring for OKX (Funding + Trading) and Kraken,
+  alongside Binance, with encrypted provider-specific credentials and approved
+  regional OKX hosts.
+- Added generic exchange account CRUD endpoints and a unified Exchange Accounts
+  admin interface while retaining the legacy Binance API.
+- Added per-source holdings for main accounts, automatically discovered
+  Binance/OKX subaccounts, and Kraken wallet accounts, with Coins filters based
+  on stable source keys.
+- Added Kraken asset alias/reward normalization and ECB daily fiat valuation.
+
+### Changed
+- Exchange holdings are aggregated by account, source, and asset so identical
+  assets in different subaccounts remain separate.
+- Partial exchange syncs persist successful sources but skip the history
+  snapshot; complete exchange-source failure preserves previous holdings.
+
 ## [2026.07.26]
 
 ### Added

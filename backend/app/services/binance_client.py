@@ -210,7 +210,34 @@ class BinanceClient:
 
     def get_all_balances(self, include_subaccounts: bool = True) -> list[dict[str, float | str]]:
         """Fetch and merge balances from main account and optional subaccounts."""
-        groups = [normalize_balances(self.get_account())]
+        sources, _warnings = self.get_balance_sources(include_subaccounts=include_subaccounts)
+        groups = [
+            [
+                Balance(asset=str(item["asset"]), free=float(item["free"]), locked=float(item["locked"]))
+                for item in sources
+                if item["source_id"] == source_id
+            ]
+            for source_id in {str(item["source_id"]) for item in sources}
+        ]
+        return merge_balances(groups)
+
+    def get_balance_sources(
+        self, include_subaccounts: bool = True
+    ) -> tuple[list[dict[str, float | str]], list[str]]:
+        """Return main/subaccount balances without merging their identities."""
+        out: list[dict[str, float | str]] = []
+        warnings: list[str] = []
+        for balance in normalize_balances(self.get_account()):
+            out.append(
+                {
+                    "asset": balance.asset,
+                    "free": balance.free,
+                    "locked": balance.locked,
+                    "source_id": "main",
+                    "source_label": "Main account",
+                    "source_kind": "main",
+                }
+            )
 
         if include_subaccounts:
             try:
@@ -218,6 +245,7 @@ class BinanceClient:
             except BinanceAPIError as exc:
                 log.warning("failed to list subaccounts, using main account only: %s", exc)
                 subaccounts = []
+                warnings.append("Binance subaccount list failed")
 
             for sub in subaccounts:
                 email = sub.get("email")
@@ -227,7 +255,17 @@ class BinanceClient:
                     data = self.get_subaccount_assets(email)
                 except BinanceAPIError as exc:
                     log.warning("failed to fetch subaccount assets email=%s: %s", email, exc)
+                    warnings.append(f"Binance subaccount failed: {email}")
                     continue
-                groups.append(normalize_balances(data))
-
-        return merge_balances(groups)
+                for balance in normalize_balances(data):
+                    out.append(
+                        {
+                            "asset": balance.asset,
+                            "free": balance.free,
+                            "locked": balance.locked,
+                            "source_id": str(email),
+                            "source_label": str(email),
+                            "source_kind": "subaccount",
+                        }
+                    )
+        return out, warnings

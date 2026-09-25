@@ -8,7 +8,7 @@ from threading import Lock
 from ..db import get_session
 from ..models import Account, Holding, NFTHolding, Price, Snapshot
 from ..wallet_chains import parse_wallet_identifier
-from . import binance, btc, eth, nfts, prices, solana
+from . import binance, btc, eth, kraken, nfts, okx, prices, solana
 
 log = logging.getLogger(__name__)
 
@@ -18,7 +18,8 @@ _EVM_NATIVE_SYMBOLS = {
     "polygon": "POL",
 }
 _PRICE_FALLBACK_MAX_AGE = timedelta(hours=24)
-_TRANSIENT_PRICE_SOURCES = {"coingecko_error", "coingecko_contract_error"}
+_TRANSIENT_PRICE_SOURCES = {"coingecko_error", "coingecko_contract_error", "ecb_error"}
+_EXCHANGE_PROVIDERS = {"binance", "okx", "kraken"}
 
 _state_lock = Lock()
 _sync_state: dict[str, object] = {
@@ -178,13 +179,16 @@ def _apply_previous_price_fallback(
 
 def _aggregate_holdings(rows: list[dict]) -> list[dict]:
     """Combine duplicate account/asset identities without collapsing contracts."""
-    combined: dict[tuple[int, str], dict] = {}
+    combined: dict[tuple[int, str, str], dict] = {}
     for row in rows:
         account_id = int(row.get("account_id") or 0)
         asset_key = str(row.get("asset_key") or "").strip()
         if not account_id or not asset_key:
             continue
-        key = (account_id, asset_key)
+        source_key = str(row.get("source_key") or f"account:{account_id}")
+        row["source_key"] = source_key
+        row.setdefault("source_kind", "main")
+        key = (account_id, source_key, asset_key)
         existing = combined.get(key)
         if existing is None:
             combined[key] = dict(row)
@@ -256,6 +260,101 @@ def _sync_binance_accounts_with_rows(
                 }
             )
     return totals
+
+
+def _effective_include_subaccounts(account: Account, provider_rows: list[Account]) -> bool:
+    configured = getattr(account, "include_subaccounts", None)
+    if configured is not None:
+        return bool(configured)
+    if account.provider == "binance":
+        # Exact compatibility with rows created before this setting existed.
+        return len(provider_rows) == 1
+    return account.provider == "okx"
+
+
+def _sync_exchange_accounts_with_rows(
+    rows: list[Account] | None = None,
+    on_progress=None,
+) -> tuple[list[dict], list[str], int, int]:
+    """Fetch exchange balances and retain every source as a separate holding."""
+    if rows is None:
+        with get_session() as session:
+            rows = (
+                session.query(Account)
+                .filter(Account.provider.in_(_EXCHANGE_PROVIDERS))
+                .all()
+            )
+    by_provider = {
+        provider: [row for row in rows if row.provider == provider]
+        for provider in _EXCHANGE_PROVIDERS
+    }
+    services = {"binance": binance, "okx": okx, "kraken": kraken}
+    totals: list[dict] = []
+    warnings: list[str] = []
+    succeeded = 0
+    failed = 0
+    for idx, account in enumerate(rows):
+        if on_progress:
+            on_progress(idx, len(rows), account)
+        provider = str(account.provider or "").lower()
+        try:
+            if not account.api_key_encrypted or not account.api_secret_encrypted:
+                raise RuntimeError("credentials are not configured")
+            if provider == "okx" and not account.api_passphrase_encrypted:
+                raise RuntimeError("OKX passphrase is not configured")
+            balances, source_warnings = services[provider].fetch_balance_sources_for_account(
+                account,
+                include_subaccounts=_effective_include_subaccounts(
+                    account, by_provider.get(provider, [])
+                ),
+            )
+            succeeded += 1
+            prefix = account.label or account.identifier or f"id={account.id}"
+            warnings.extend(f"{provider.upper()} {prefix}: {message}" for message in source_warnings)
+        except Exception as exc:
+            failed += 1
+            safe_name = account.label or account.identifier or f"id={account.id}"
+            log.exception(
+                "failed to fetch %s balances for account_id=%s", provider, account.id
+            )
+            detail = str(exc).strip()
+            suffix = f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
+            warnings.append(f"{provider.upper()} {safe_name} failed: {suffix}")
+            continue
+
+        parent_label = account.label or account.identifier or provider.upper()
+        for balance in balances:
+            asset = str(balance.get("asset") or "").strip().upper()
+            if not asset:
+                continue
+            qty = float(balance.get("free") or 0) + float(balance.get("locked") or 0)
+            if qty <= 0:
+                continue
+            source_id = str(balance.get("source_id") or "main")
+            source_kind = str(balance.get("source_kind") or "main")
+            child_label = str(balance.get("source_label") or source_id)
+            source_label = (
+                parent_label
+                if source_kind == "main"
+                else f"{parent_label} / {child_label}"
+            )
+            totals.append(
+                {
+                    "account_id": account.id,
+                    "asset": asset,
+                    "qty": qty,
+                    "asset_key": _symbol_price_key(asset),
+                    "price_key": _symbol_price_key(asset),
+                    "asset_kind": None,
+                    "contract_address": None,
+                    "visibility": "visible",
+                    "risk_reason": None,
+                    "source_key": f"{provider}:{account.id}:{source_kind}:{source_id}",
+                    "source_label": source_label,
+                    "source_kind": source_kind,
+                }
+            )
+    return _aggregate_holdings(totals), warnings, succeeded, failed
 
 
 def _sync_wallet_accounts() -> list[dict]:
@@ -498,7 +597,11 @@ def sync_all(trigger: str = "manual") -> None:
 
     try:
         with get_session() as s:
-            binance_rows = s.query(Account).filter(Account.provider == "binance").all()
+            exchange_rows = (
+                s.query(Account)
+                .filter(Account.provider.in_(_EXCHANGE_PROVIDERS))
+                .all()
+            )
             wallet_rows = s.query(Account).filter(Account.provider == "wallet").all()
             previous_price_rows = s.query(Price).order_by(Price.ts.desc()).all()
         previous_prices: dict[str, Price] = {}
@@ -510,13 +613,13 @@ def sync_all(trigger: str = "manual") -> None:
         def _fmt_account(a: Account) -> str:
             return a.label or a.identifier or f"id={a.id}"
 
-        def _b_progress(i: int, total: int, a: Account) -> None:
+        def _e_progress(i: int, total: int, a: Account) -> None:
             if total <= 0:
                 return
             pct = 5 + int(((i + 1) / total) * 35)
             _set_state(
                 progress=min(pct, 40),
-                message=f"Fetching Binance balances ({i + 1}/{total}): {_fmt_account(a)}",
+                message=f"Fetching {a.provider.upper()} balances ({i + 1}/{total}): {_fmt_account(a)}",
             )
 
         def _w_progress(i: int, total: int, a: Account) -> None:
@@ -528,8 +631,12 @@ def sync_all(trigger: str = "manual") -> None:
                 message=f"Fetching wallet balances ({i + 1}/{total}): {_fmt_account(a)}",
             )
 
-        _set_state(progress=5, message=f"Starting Binance sync for {len(binance_rows)} account(s)...")
-        holdings = _sync_binance_accounts_with_rows(binance_rows, on_progress=_b_progress)
+        _set_state(progress=5, message=f"Starting exchange sync for {len(exchange_rows)} account(s)...")
+        holdings, exchange_warnings, exchange_successes, exchange_failures = (
+            _sync_exchange_accounts_with_rows(exchange_rows, on_progress=_e_progress)
+        )
+        if exchange_rows and exchange_successes == 0 and not wallet_rows:
+            raise RuntimeError("all configured exchange sources failed; previous holdings were preserved")
         _set_state(progress=40, message=f"Starting wallet sync for {len(wallet_rows)} wallet(s)...")
         wallet_holdings = _sync_wallet_accounts_with_rows(wallet_rows, on_progress=_w_progress)
         holdings.extend(wallet_holdings)
@@ -576,6 +683,12 @@ def sync_all(trigger: str = "manual") -> None:
         if blacklist_keys:
             synced_nfts = _apply_nft_blacklist(synced_nfts, blacklist_keys)
         warning_parts = [message for message in (_wallet_rpc_warning(),) if message]
+        warning_parts.extend(exchange_warnings)
+        partial_sync = bool(exchange_warnings or exchange_failures)
+        if partial_sync:
+            warning_parts.append(
+                "Historical snapshot skipped because one or more exchange sources failed."
+            )
         visible_holdings = [
             h for h in holdings if str(h.get("visibility") or "visible").strip().lower() == "visible"
         ]
@@ -626,7 +739,7 @@ def sync_all(trigger: str = "manual") -> None:
             if unpriced:
                 details.append(f"left {unpriced} affected asset(s) unpriced")
             warning_parts.append(
-                "CoinGecko price requests failed; " + ", and ".join(details) + "."
+                "External price requests failed; " + ", and ".join(details) + "."
             )
         warning = " ".join(warning_parts) or None
 
@@ -730,6 +843,9 @@ def sync_all(trigger: str = "manual") -> None:
                         contract_address=h.get("contract_address"),
                         visibility=str(h.get("visibility") or "visible"),
                         risk_reason=h.get("risk_reason"),
+                        source_key=str(h.get("source_key") or f"account:{h['account_id']}"),
+                        source_label=h.get("source_label"),
+                        source_kind=str(h.get("source_kind") or "main"),
                     )
                 )
             price_symbol_by_key = {
@@ -768,16 +884,17 @@ def sync_all(trigger: str = "manual") -> None:
                         visibility=str(row.get("visibility") or "visible"),
                     )
                 )
-            # Keep a single historical snapshot per UTC day (latest run wins).
-            _persist_daily_snapshot(
-                s,
-                total_eur=total_eur,
-                total_usd=total_usd,
-                holdings_count=len(visible_holdings),
-                symbols_count=len({str(h["asset"]) for h in visible_holdings}),
-                nfts_count=len(synced_nfts),
-                meta_payload=history_meta,
-            )
+            if not partial_sync:
+                # Keep a single historical snapshot per UTC day (latest run wins).
+                _persist_daily_snapshot(
+                    s,
+                    total_eur=total_eur,
+                    total_usd=total_usd,
+                    holdings_count=len(visible_holdings),
+                    symbols_count=len({str(h["asset"]) for h in visible_holdings}),
+                    nfts_count=len(synced_nfts),
+                    meta_payload=history_meta,
+                )
             s.commit()
 
         finished = _utc_now_iso()

@@ -22,7 +22,7 @@ pytest -q backend/tests
 
 Required environment variable:
 
-- `ENCRYPTION_KEY` (Fernet): used by the backend to encrypt/decrypt sensitive credentials (for example Binance API key/secret) before storing them in the database.
+- `ENCRYPTION_KEY` (Fernet): used by the backend to encrypt/decrypt sensitive credentials (Binance, OKX, and Kraken API keys/secrets plus the OKX passphrase) before storing them in the database.
 - Generate one with:
 
 ```bash
@@ -48,3 +48,14 @@ Trigger sync:
 ```bash
 curl -X POST http://127.0.0.1:8000/sync
 ```
+
+Exchange account administration:
+
+- `GET/POST /admin/exchange-accounts/`
+- `PUT/DELETE /admin/exchange-accounts/{id}`
+- Legacy `/admin/binance-accounts` endpoints remain available.
+
+Only read-only Spot/cash balances are requested. OKX keys need **Read**;
+Kraken keys need **Funds permissions - Query**; Binance keys keep the existing
+read-only permission. Empty credential values on updates retain the encrypted
+values already stored.

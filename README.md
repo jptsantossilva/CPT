@@ -1,7 +1,8 @@
 # Crypto Portfolio Tracker
 
 Track your crypto portfolio across:
-- Binance accounts/subaccounts
+- Binance and OKX accounts/subaccounts
+- Kraken Spot accounts (each true subaccount is registered with its own key)
 - Multi-chain wallets (EVM, Bitcoin, Solana)
 - NFTs with valuation and filtering
 
@@ -61,6 +62,30 @@ PY
 ```
 
 Then fill the API/RPC variables you want to use (`BINANCE_*`, `ETH_RPC_URL`, `BASE_RPC_URL`, `POLYGON_RPC_URL`, `SOLANA_RPC_URL`, `OPENSEA_API_KEY`, etc.).
+
+### Exchange accounts and read-only permissions
+
+Add exchange credentials under **Accounts → Exchange Accounts**. The tracker
+only reads positive Spot/cash balances; it does not place orders, transfer
+funds, or request withdrawal permissions.
+
+- **Binance:** use the existing read-only API permission. Subaccounts are
+  discovered from the master account when **Include subaccounts** is enabled.
+- **OKX:** enable only **Read**, enter the API passphrase, and select the region
+  that owns the account (EEA, Global, or US). Funding and Trading balances are
+  combined within each main/subaccount source.
+- **Kraken:** enable **Funds permissions - Query**. Register every true Kraken
+  Spot subaccount separately because Spot credentials do not discover
+  derivatives-style subaccounts.
+
+Derivatives, margin positions/debt, dedicated Earn allocations, demo accounts,
+transfers, withdrawals, and trading are outside the supported scope.
+
+Current holdings retain their main/subaccount source in the Coins filters.
+Historical snapshots remain globally aggregated by asset. If part of an
+exchange sync fails, successful sources are updated but no history snapshot is
+written for that cycle; if every configured exchange source fails, previous
+holdings are preserved.
 
 ### 2) Start services
 

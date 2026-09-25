@@ -34,3 +34,15 @@ def fetch_balances_for_account(account, *, include_subaccounts: bool = True) -> 
         api_secret,
         include_subaccounts=include_subaccounts,
     )
+
+
+def fetch_balance_sources_for_account(
+    account, *, include_subaccounts: bool = True
+) -> tuple[List[dict], list[str]]:
+    """Decrypt an account and return main/subaccount balances separately."""
+    if not account.api_key_encrypted or not account.api_secret_encrypted:
+        return [], []
+    api_key = decrypt_text(account.api_key_encrypted)
+    api_secret = decrypt_text(account.api_secret_encrypted)
+    with BinanceClient(api_key=api_key, api_secret=api_secret) as cli:
+        return cli.get_balance_sources(include_subaccounts=include_subaccounts)

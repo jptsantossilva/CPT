@@ -5,7 +5,7 @@ import { formatEur, formatUsd } from '../shared/format'
 
 type SortField = 'asset_symbol' | 'account' | 'chain' | 'quantity' | 'unit_price' | 'value_eur' | 'value_usd'
 type SortDir = 'asc' | 'desc'
-type SourceAccount = { id: number; label: string | null; identifier: string | null }
+type SourceAccount = { key: string; label: string }
 type SourceChain = { key: string; label: string }
 const ICON_SYMBOL_ALIASES: Record<string, string[]> = {
   GUN: ['gunz', 'gun'],
@@ -24,7 +24,7 @@ function formatUnitPrice(price: number, currency: 'EUR' | 'USD', valueEur: numbe
 }
 
 function accountDisplay(a: any): string {
-  return String(a.account_label || a.account_identifier || a.account_display || '-')
+  return String(a.source_label || a.account_label || a.account_identifier || a.account_display || '-')
 }
 
 function unitPriceSortValue(a: any): number {
@@ -113,7 +113,7 @@ export default function Assets() {
   const [search, setSearch] = React.useState('')
   const [sortBy, setSortBy] = React.useState<SortField>('value_usd')
   const [sortDir, setSortDir] = React.useState<SortDir>('desc')
-  const [selectedAccountIds, setSelectedAccountIds] = React.useState<number[]>([])
+  const [selectedSourceKeys, setSelectedSourceKeys] = React.useState<string[]>([])
   const [selectedChains, setSelectedChains] = React.useState<string[]>([])
   const [hideLowValue, setHideLowValue] = React.useState(true)
   const [showSuspicious, setShowSuspicious] = React.useState(false)
@@ -140,19 +140,15 @@ export default function Assets() {
   }, [assets])
 
   const sourceOptions = React.useMemo<SourceAccount[]>(() => {
-    const map = new Map<number, SourceAccount>()
+    const map = new Map<string, SourceAccount>()
     for (const asset of assets) {
-      const id = Number(asset.account_id || 0)
-      if (!id) continue
-      if (!map.has(id)) {
-        map.set(id, { id, label: asset.account_label || null, identifier: asset.account_identifier || null })
+      const key = String(asset.source_key || `account:${asset.account_id || 0}`)
+      if (!key) continue
+      if (!map.has(key)) {
+        map.set(key, { key, label: String(asset.source_label || accountDisplay(asset)) })
       }
     }
-    return Array.from(map.values()).sort((a, b) => {
-      const aLabel = a.label || a.identifier || ''
-      const bLabel = b.label || b.identifier || ''
-      return aLabel.localeCompare(bLabel) || a.id - b.id
-    })
+    return Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label))
   }, [assets])
 
   const chainOptions = React.useMemo<SourceChain[]>(() => {
@@ -168,13 +164,13 @@ export default function Assets() {
 
   React.useEffect(() => {
     if (sourceOptions.length === 0) {
-      setSelectedAccountIds([])
+      setSelectedSourceKeys([])
       return
     }
-    setSelectedAccountIds((prev) => {
-      if (prev.length === 0) return sourceOptions.map((o) => o.id)
-      const valid = prev.filter((id) => sourceOptions.some((o) => o.id === id))
-      return valid.length > 0 ? valid : sourceOptions.map((o) => o.id)
+    setSelectedSourceKeys((prev) => {
+      if (prev.length === 0) return sourceOptions.map((o) => o.key)
+      const valid = prev.filter((key) => sourceOptions.some((o) => o.key === key))
+      return valid.length > 0 ? valid : sourceOptions.map((o) => o.key)
     })
   }, [sourceOptions])
 
@@ -199,13 +195,13 @@ export default function Assets() {
     setSortDir(['value_eur', 'value_usd', 'quantity', 'unit_price'].includes(field) ? 'desc' : 'asc')
   }
 
-  function toggleAccount(id: number) {
-    setSelectedAccountIds((prev) => {
-      if (prev.includes(id)) {
-        const next = prev.filter((item) => item !== id)
+  function toggleSource(key: string) {
+    setSelectedSourceKeys((prev) => {
+      if (prev.includes(key)) {
+        const next = prev.filter((item) => item !== key)
         return next.length > 0 ? next : prev
       }
-      return [...prev, id]
+      return [...prev, key]
     })
   }
 
@@ -226,7 +222,8 @@ export default function Assets() {
     if (!nameOk) return false
     const hidden = String(a.visibility || 'visible').toLowerCase() === 'hidden'
     if (hideLowValue && !hidden && Number(a.value_usd || 0) <= 1) return false
-    if (selectedAccountIds.length > 0 && !selectedAccountIds.includes(Number(a.account_id || 0))) return false
+    const sourceKey = String(a.source_key || `account:${a.account_id || 0}`)
+    if (selectedSourceKeys.length > 0 && !selectedSourceKeys.includes(sourceKey)) return false
     const chainKey = String(a.chain || '').trim().toLowerCase() || 'no-chain'
     if (selectedChains.length > 0 && !selectedChains.includes(chainKey)) return false
     return true
@@ -316,14 +313,14 @@ export default function Assets() {
           <Stack direction="row" gap={1} flexWrap="wrap" alignItems="center">
             <Typography variant="body2" color="text.secondary">Exchanges and Wallets:</Typography>
             {sourceOptions.map((source) => {
-              const selected = selectedAccountIds.includes(source.id)
+              const selected = selectedSourceKeys.includes(source.key)
               return (
                 <Chip
-                  key={source.id}
-                  label={source.label || source.identifier || 'unknown'}
+                  key={source.key}
+                  label={source.label || 'unknown'}
                   color={selected ? 'primary' : 'default'}
                   variant={selected ? 'filled' : 'outlined'}
-                  onClick={() => toggleAccount(source.id)}
+                  onClick={() => toggleSource(source.key)}
                 />
               )
             })}
@@ -424,7 +421,7 @@ export default function Assets() {
                 ) : null}
                 {sorted.map((a, idx) => (
                   <TableRow
-                    key={`${a.asset_key || a.asset_symbol}-${a.account_id}`}
+                    key={`${a.asset_key || a.asset_symbol}-${a.source_key || a.account_id}`}
                     sx={(theme) => ({
                       backgroundColor:
                         idx % 2 === 0

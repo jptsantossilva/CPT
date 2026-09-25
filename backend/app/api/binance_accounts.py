@@ -147,7 +147,7 @@ def delete_account(account_id: int):
     try:
         with get_session() as s:
             a = s.get(Account, account_id)
-            if not a:
+            if not a or a.provider != "binance":
                 raise HTTPException(status_code=404, detail="not found")
             s.delete(a)
             s.commit()

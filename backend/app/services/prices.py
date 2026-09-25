@@ -10,6 +10,8 @@ Notes:
 - Basic retry/backoff on network errors and 429 responses.
 """
 
+import csv
+import io
 import logging
 import os
 import time
@@ -26,6 +28,16 @@ from ..models import PriceSymbolMapping
 log = logging.getLogger(__name__)
 
 COINGECKO_BASE = os.getenv("COINGECKO_API_BASE", "https://api.coingecko.com/api/v3")
+ECB_DATA_BASE = os.getenv(
+    "ECB_DATA_API_BASE", "https://data-api.ecb.europa.eu/service/data"
+)
+_FIAT_SYMBOLS = {
+    "AUD", "BRL", "CAD", "CHF", "CNY", "CZK", "DKK", "EUR", "GBP", "HKD",
+    "HUF", "IDR", "ILS", "INR", "ISK", "JPY", "KRW", "MXN", "MYR", "NOK",
+    "NZD", "PHP", "PLN", "RON", "SEK", "SGD", "THB", "TRY", "USD", "ZAR",
+}
+_ecb_rate_cache: Dict[str, int | dict] = {"ts": 0, "data": {}}
+_ECB_RATE_TTL = 24 * 3600
 
 # Cache for coin list (symbol -> coin id)
 _coin_list_cache: Dict[str, int | dict] = {"ts": 0, "data": {}}
@@ -435,6 +447,45 @@ def _fetch_coin_markets(ids: List[str]) -> Dict[str, dict] | None:
         return None
 
 
+def _load_ecb_rates(currencies: set[str]) -> Dict[str, float] | None:
+    """Return units of each currency per EUR from the latest ECB observation."""
+    required = {code for code in currencies if code != "EUR"}
+    required.add("USD")
+    cached = _ecb_rate_cache["data"]
+    if (
+        _now() - float(_ecb_rate_cache["ts"]) < _ECB_RATE_TTL
+        and required.issubset(set(cached))
+    ):
+        return cached  # type: ignore[return-value]
+    series = "+".join(sorted(required))
+    url = f"{ECB_DATA_BASE}/EXR/D.{series}.EUR.SP00.A"
+    try:
+        with httpx.Client(timeout=10) as client:
+            response = client.get(
+                url,
+                params={
+                    "lastNObservations": 1,
+                    "format": "csvdata",
+                    "detail": "dataonly",
+                },
+            )
+            response.raise_for_status()
+        rates: Dict[str, float] = {"EUR": 1.0}
+        for row in csv.DictReader(io.StringIO(response.text)):
+            currency = str(row.get("CURRENCY") or "").upper()
+            value = row.get("OBS_VALUE")
+            if currency and value not in (None, ""):
+                rates[currency] = float(value)
+        if "USD" not in rates:
+            raise ValueError("ECB response did not contain USD")
+        _ecb_rate_cache["ts"] = _now()
+        _ecb_rate_cache["data"] = rates
+        return rates
+    except Exception as exc:
+        log.warning("failed to fetch ECB exchange rates: %s", exc)
+        return cached if cached else None  # type: ignore[return-value]
+
+
 def fetch_prices(symbols: List[str]) -> Dict[str, dict]:
     """Fetch prices for a list of symbols.
 
@@ -445,9 +496,31 @@ def fetch_prices(symbols: List[str]) -> Dict[str, dict]:
 
     to_query_ids: List[str] = []
     symbol_to_id: Dict[str, str] = {}
+    fiat_symbols = {str(symbol).upper() for symbol in symbols} & _FIAT_SYMBOLS
+    fiat_rates = _load_ecb_rates(fiat_symbols) if fiat_symbols else {}
 
     # First, serve from cache when valid
     for s in symbols:
+        symbol = s.upper()
+        if symbol in fiat_symbols:
+            rate = float((fiat_rates or {}).get(symbol, 0.0))
+            usd_rate = float((fiat_rates or {}).get("USD", 0.0))
+            if rate > 0 and usd_rate > 0:
+                out[s] = {
+                    "price_eur": 1.0 / rate,
+                    "price_usd": usd_rate / rate,
+                    "ts": now,
+                    "source": "ecb",
+                }
+                _price_cache[symbol] = {"ts": now, "data": out[s]}
+            else:
+                out[s] = {
+                    "price_eur": 0.0,
+                    "price_usd": 0.0,
+                    "ts": now,
+                    "source": "ecb_error",
+                }
+            continue
         cached = _price_cache.get(s.upper())
         if cached and now - cached["ts"] < _PRICE_TTL:
             out[s] = cached["data"].copy()

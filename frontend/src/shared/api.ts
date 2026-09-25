@@ -256,6 +256,36 @@ export async function deleteBinanceAccount(accountId: number) {
   return apiDelete<any>(`/admin/binance-accounts/${accountId}`)
 }
 
+export type ExchangeProvider = 'binance' | 'okx' | 'kraken'
+
+export type ExchangeAccount = {
+  id: number
+  provider: ExchangeProvider
+  identifier: string
+  label?: string | null
+  api_key_masked: string
+  api_secret_masked: string
+  api_passphrase_masked?: string | null
+  region?: 'eea' | 'global' | 'us' | null
+  include_subaccounts: boolean
+}
+
+export async function listExchangeAccounts() {
+  return apiGet<ExchangeAccount[]>('/admin/exchange-accounts/')
+}
+
+export async function createExchangeAccount(payload: any) {
+  return apiPost<ExchangeAccount>('/admin/exchange-accounts/', payload)
+}
+
+export async function updateExchangeAccount(accountId: number, payload: any) {
+  return apiPut<ExchangeAccount>(`/admin/exchange-accounts/${accountId}`, payload)
+}
+
+export async function deleteExchangeAccount(accountId: number) {
+  return apiDelete<{ deleted: number }>(`/admin/exchange-accounts/${accountId}`)
+}
+
 export async function listWallets() {
   return apiGet<any[]>('/admin/wallets/')
 }

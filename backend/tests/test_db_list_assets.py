@@ -35,6 +35,9 @@ def test_list_assets_matches_prices_by_identity_and_hides_suspicious(monkeypatch
                     asset_key="native:ethereum:ETH",
                     price_key="symbol:ETH",
                     asset_kind="native",
+                    source_key="wallet:1:main",
+                    source_label="Primary wallet",
+                    source_kind="main",
                 ),
                 Holding(
                     account_id=account_id,
@@ -91,6 +94,9 @@ def test_list_assets_matches_prices_by_identity_and_hides_suspicious(monkeypatch
     assert len(visible) == 3
     native = next(row for row in visible if row["asset_kind"] == "native")
     assert native["value_eur"] == 900.0
+    assert native["source_key"] == "wallet:1:main"
+    assert native["source_label"] == "Primary wallet"
+    assert native["source_kind"] == "main"
     foo_rows = sorted((row for row in visible if row["asset_symbol"] == "FOO"), key=lambda row: row["price_eur"])
     assert [(row["price_eur"], row["value_eur"]) for row in foo_rows] == [(1.0, 2.0), (4.0, 12.0)]
 

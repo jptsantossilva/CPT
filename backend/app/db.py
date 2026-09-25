@@ -28,12 +28,33 @@ DEFAULT_PRICE_SYMBOL_MAPPINGS: dict[str, dict[str, str]] = {
 
 def init_db():
     SQLModel.metadata.create_all(engine)
+    _ensure_account_exchange_columns()
     _ensure_holding_identity_columns()
     _ensure_price_identity_columns()
     _ensure_snapshot_validity_columns()
     _ensure_nft_holding_columns()
     _ensure_notification_anchor_columns()
     seed_default_price_symbol_mappings()
+
+
+def _ensure_account_exchange_columns() -> None:
+    """Add multi-exchange configuration fields to existing databases."""
+    try:
+        insp = inspect(engine)
+        if "account" not in insp.get_table_names():
+            return
+        existing = {str(c.get("name")) for c in insp.get_columns("account")}
+        columns = {
+            "api_passphrase_encrypted": "VARCHAR",
+            "provider_region": "VARCHAR",
+            "include_subaccounts": "BOOLEAN",
+        }
+        with engine.begin() as conn:
+            for name, sql_type in columns.items():
+                if name not in existing:
+                    conn.execute(text(f"ALTER TABLE account ADD COLUMN {name} {sql_type}"))
+    except Exception:
+        log.exception("failed to add exchange account columns")
 
 
 def _ensure_holding_identity_columns() -> None:
@@ -50,6 +71,9 @@ def _ensure_holding_identity_columns() -> None:
             "contract_address": "VARCHAR",
             "visibility": "VARCHAR DEFAULT 'visible'",
             "risk_reason": "VARCHAR",
+            "source_key": "VARCHAR",
+            "source_label": "VARCHAR",
+            "source_kind": "VARCHAR",
         }
         with engine.begin() as conn:
             for name, sql_type in columns.items():
@@ -242,6 +266,14 @@ def list_assets(include_hidden: bool = False):
                         wallet_identifier if chain == "ethereum" else f"{chain}:{wallet_identifier}"
                     )
             holding_chain = (h.asset_name or "").strip().lower() or None
+            source_key = str(getattr(h, "source_key", None) or f"account:{account_id}")
+            source_label = str(
+                getattr(h, "source_label", None)
+                or account_label
+                or account_identifier
+                or "unknown"
+            )
+            source_kind = str(getattr(h, "source_kind", None) or "main")
             out.append(
                 {
                     "id": int(h.id) if h.id is not None else None,
@@ -250,6 +282,9 @@ def list_assets(include_hidden: bool = False):
                     "account_identifier": account_identifier,
                     "account_label": account_label,
                     "account_display": account_label or account_identifier or "unknown",
+                    "source_key": source_key,
+                    "source_label": source_label,
+                    "source_kind": source_kind,
                     "chain": holding_chain,
                     "asset_key": getattr(h, "asset_key", None) or f"symbol:{sym}",
                     "price_key": price_key or f"symbol:{sym}",

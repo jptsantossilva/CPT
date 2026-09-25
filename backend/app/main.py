@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from sqlmodel import select
 
 from . import db, services
-from .api import binance_accounts, fiat_cashflows, notifications, price_mappings, snapshots, sync_schedule, wallets
+from .api import binance_accounts, exchange_accounts, fiat_cashflows, notifications, price_mappings, snapshots, sync_schedule, wallets
 from .models import FiatCashFlow, Snapshot
 
 app = FastAPI(title="Crypto Portfolio Tracker")
@@ -178,6 +178,7 @@ def update_currency_setting(payload: CurrencySettingUpdate):
 
 # admin routes
 app.include_router(binance_accounts.router)
+app.include_router(exchange_accounts.router)
 app.include_router(wallets.router)
 app.include_router(sync_schedule.router)
 app.include_router(notifications.router)

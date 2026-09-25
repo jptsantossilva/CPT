@@ -14,6 +14,11 @@ class Account(SQLModel, table=True):
     # Encrypted API credentials (Fernet). Keep empty if not applicable.
     api_key_encrypted: Optional[str] = None
     api_secret_encrypted: Optional[str] = None
+    api_passphrase_encrypted: Optional[str] = None
+    provider_region: Optional[str] = None
+    # None is kept for legacy Binance rows so sync can preserve the original
+    # "single configured account includes subaccounts" behaviour.
+    include_subaccounts: Optional[bool] = None
     is_exchange: bool = False
 
 
@@ -31,6 +36,11 @@ class Holding(SQLModel, table=True):
     contract_address: Optional[str] = None
     visibility: str = "visible"
     risk_reason: Optional[str] = None
+    # A single API credential can expose several independently filterable
+    # sources (main account, subaccounts, or Kraken wallet accounts).
+    source_key: Optional[str] = None
+    source_label: Optional[str] = None
+    source_kind: Optional[str] = None  # main|subaccount
 
 
 class Price(SQLModel, table=True):
