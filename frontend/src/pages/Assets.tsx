@@ -1,5 +1,5 @@
 import React from 'react'
-import { Box, Card, CardContent, Checkbox, Chip, FormControlLabel, Stack, Table, TableBody, TableCell, TableHead, TableRow, TableSortLabel, TextField, Tooltip, Typography } from '@mui/material'
+import { Box, Button, Card, CardContent, Checkbox, Chip, FormControlLabel, Menu, MenuItem, Stack, Table, TableBody, TableCell, TableHead, TableRow, TableSortLabel, TextField, Tooltip, Typography } from '@mui/material'
 import { fetchAssetIcons, fetchAssets } from '../shared/api'
 import { formatEur, formatUsd } from '../shared/format'
 
@@ -117,6 +117,8 @@ export default function Assets() {
   const [selectedChains, setSelectedChains] = React.useState<string[]>([])
   const [hideLowValue, setHideLowValue] = React.useState(true)
   const [showSuspicious, setShowSuspicious] = React.useState(false)
+  const [sourceOnlyAnchor, setSourceOnlyAnchor] = React.useState<HTMLElement | null>(null)
+  const [chainOnlyAnchor, setChainOnlyAnchor] = React.useState<HTMLElement | null>(null)
 
   React.useEffect(() => {
     fetchAssets(showSuspicious).then(setAssets).catch(() => {})
@@ -213,6 +215,16 @@ export default function Assets() {
       }
       return [...prev, key]
     })
+  }
+
+  function showOnlySource(key: string) {
+    setSelectedSourceKeys([key])
+    setSourceOnlyAnchor(null)
+  }
+
+  function showOnlyChain(key: string) {
+    setSelectedChains([key])
+    setChainOnlyAnchor(null)
   }
 
   const filtered = assets.filter((a) => {
@@ -312,6 +324,31 @@ export default function Assets() {
 
           <Stack direction="row" gap={1} flexWrap="wrap" alignItems="center">
             <Typography variant="body2" color="text.secondary">Exchanges and Wallets:</Typography>
+            <Button
+              size="small"
+              variant="outlined"
+              onClick={(event) => setSourceOnlyAnchor(event.currentTarget)}
+              aria-haspopup="menu"
+              aria-expanded={Boolean(sourceOnlyAnchor) ? 'true' : undefined}
+            >
+              Show only
+            </Button>
+            {selectedSourceKeys.length < sourceOptions.length && (
+              <Button size="small" variant="text" onClick={() => setSelectedSourceKeys(sourceOptions.map((option) => option.key))}>
+                Show all
+              </Button>
+            )}
+            <Menu
+              anchorEl={sourceOnlyAnchor}
+              open={Boolean(sourceOnlyAnchor)}
+              onClose={() => setSourceOnlyAnchor(null)}
+            >
+              {sourceOptions.map((source) => (
+                <MenuItem key={source.key} onClick={() => showOnlySource(source.key)}>
+                  {source.label || 'unknown'}
+                </MenuItem>
+              ))}
+            </Menu>
             {sourceOptions.map((source) => {
               const selected = selectedSourceKeys.includes(source.key)
               return (
@@ -328,6 +365,31 @@ export default function Assets() {
 
           <Stack direction="row" gap={1} flexWrap="wrap" alignItems="center">
             <Typography variant="body2" color="text.secondary">Chains:</Typography>
+            <Button
+              size="small"
+              variant="outlined"
+              onClick={(event) => setChainOnlyAnchor(event.currentTarget)}
+              aria-haspopup="menu"
+              aria-expanded={Boolean(chainOnlyAnchor) ? 'true' : undefined}
+            >
+              Show only
+            </Button>
+            {selectedChains.length < chainOptions.length && (
+              <Button size="small" variant="text" onClick={() => setSelectedChains(chainOptions.map((option) => option.key))}>
+                Show all
+              </Button>
+            )}
+            <Menu
+              anchorEl={chainOnlyAnchor}
+              open={Boolean(chainOnlyAnchor)}
+              onClose={() => setChainOnlyAnchor(null)}
+            >
+              {chainOptions.map((chain) => (
+                <MenuItem key={chain.key} onClick={() => showOnlyChain(chain.key)}>
+                  {chain.label}
+                </MenuItem>
+              ))}
+            </Menu>
             {chainOptions.map((chain) => {
               const selected = selectedChains.includes(chain.key)
               return (

@@ -1,6 +1,6 @@
 import React from 'react'
 import SyncRoundedIcon from '@mui/icons-material/SyncRounded'
-import { Alert, Box, Button, Card, CardContent, Checkbox, Chip, CircularProgress, FormControlLabel, Grid, Stack, Typography } from '@mui/material'
+import { Alert, Box, Button, Card, CardContent, Checkbox, Chip, CircularProgress, FormControl, FormControlLabel, Grid, InputLabel, ListItemText, MenuItem, Select, Stack, Typography } from '@mui/material'
 import {
   fetchAssetIcons,
   fetchAssets,
@@ -189,6 +189,7 @@ export default function Dashboard({
   const [showTotals, setShowTotals] = React.useState(true)
   const [showCoinsLines, setShowCoinsLines] = React.useState(false)
   const [showNftsLines, setShowNftsLines] = React.useState(false)
+  const [selectedExchangeKeys, setSelectedExchangeKeys] = React.useState<string[]>([])
   const [historyHoverIndex, setHistoryHoverIndex] = React.useState<number | null>(null)
   const [historyHoverLineKey, setHistoryHoverLineKey] = React.useState<string | null>(null)
   const [historyTooltipPos, setHistoryTooltipPos] = React.useState<{ x: number; y: number; alignRight: boolean; openDown: boolean } | null>(null)
@@ -251,7 +252,7 @@ export default function Dashboard({
         setSnapshot(latestSnapshot)
         setAssets(latestAssets || [])
         setNfts(latestNfts || [])
-        setPortfolioHistory(history || { points: [], coin_labels: {}, nft_labels: {} })
+        setPortfolioHistory(history || { points: [], coin_labels: {}, nft_labels: {}, exchange_accounts: {} })
         setPortfolioPerformance(performance)
       })
       .catch(() => {})
@@ -305,7 +306,7 @@ export default function Dashboard({
           setSnapshot(latestSnap)
           setAssets(latestAssets)
           setNfts(latestNfts)
-          setPortfolioHistory(history || { points: [], coin_labels: {}, nft_labels: {} })
+          setPortfolioHistory(history || { points: [], coin_labels: {}, nft_labels: {}, exchange_accounts: {} })
           setPortfolioPerformance(performance)
         } else if (status.status === 'failed') {
           setNotice({ type: 'error', text: status.message || 'Sync failed.' })
@@ -618,14 +619,58 @@ export default function Dashboard({
     return points.filter((p) => new Date(p.timestamp).getTime() >= cutoff)
   }, [historyRange, portfolioHistory?.points])
 
-  type ChartLine = { key: string; label: string; currency: 'EUR' | 'USD'; weight: number; color: string; values: number[] }
+  const exchangeAccountOptions = React.useMemo(
+    () => Object.entries(portfolioHistory?.exchange_accounts || {})
+      .sort(([, left], [, right]) => {
+        const leftLabel = (left.provider + ' ' + left.label).toLocaleLowerCase()
+        const rightLabel = (right.provider + ' ' + right.label).toLocaleLowerCase()
+        return leftLabel.localeCompare(rightLabel)
+      }),
+    [portfolioHistory?.exchange_accounts]
+  )
+  const exchangeHistoryMode = selectedExchangeKeys.length > 0
+
+  type ChartLine = {
+    key: string
+    label: string
+    currency: 'EUR' | 'USD'
+    weight: number
+    color: string
+    values: Array<number | null>
+  }
+
   const historyLines = React.useMemo(() => {
     const points = filteredHistoryPoints
     if (points.length === 0) return [] as ChartLine[]
 
+    const isEur = currencyMode === 'EUR'
     const lines: ChartLine[] = []
+    if (selectedExchangeKeys.length > 0) {
+      for (const exchangeKey of selectedExchangeKeys) {
+        const account = portfolioHistory?.exchange_accounts?.[exchangeKey]
+        if (!account) continue
+        const provider = account.provider.toUpperCase()
+        const label = account.label.toUpperCase().startsWith(provider)
+          ? account.label
+          : provider + ' · ' + account.label
+        lines.push({
+          key: 'exchange_' + exchangeKey + '_' + (isEur ? 'eur' : 'usd'),
+          label,
+          currency: currencyMode,
+          weight: 2.4,
+          color: colorFromKey('exchange-' + exchangeKey, isEur ? 18 : 52),
+          values: points.map((point) => {
+            const values = point.exchanges?.[exchangeKey]
+            if (!values) return null
+            const value = Number(isEur ? values.eur : values.usd)
+            return Number.isFinite(value) ? value : null
+          }),
+        })
+      }
+      return lines
+    }
+
     if (showTotals) {
-      const isEur = currencyMode === 'EUR'
       lines.push({
         key: isEur ? 'total_eur' : 'total_usd',
         label: 'Total Portfolio',
@@ -640,13 +685,12 @@ export default function Dashboard({
       const coinKeys = Object.keys(portfolioHistory?.coin_labels || {})
       for (const coinKey of coinKeys) {
         const coinLabel = portfolioHistory?.coin_labels?.[coinKey] || coinKey
-        const isEur = currencyMode === 'EUR'
         lines.push({
-          key: `coin_${coinKey}_${isEur ? 'eur' : 'usd'}`,
+          key: 'coin_' + coinKey + '_' + (isEur ? 'eur' : 'usd'),
           label: coinLabel,
           currency: currencyMode,
           weight: 1.2,
-          color: colorFromKey(`coin-${coinKey}-${isEur ? 'eur' : 'usd'}`, isEur ? 12 : 48),
+          color: colorFromKey('coin-' + coinKey + '-' + (isEur ? 'eur' : 'usd'), isEur ? 12 : 48),
           values: points.map((p) => Number(isEur ? p.coins?.[coinKey]?.eur || 0 : p.coins?.[coinKey]?.usd || 0)),
         })
       }
@@ -656,23 +700,35 @@ export default function Dashboard({
       const nftKeys = Object.keys(portfolioHistory?.nft_labels || {})
       for (const nftKey of nftKeys) {
         const nftLabel = portfolioHistory?.nft_labels?.[nftKey] || nftKey
-        const isEur = currencyMode === 'EUR'
         lines.push({
-          key: `nft_${nftKey}_${isEur ? 'eur' : 'usd'}`,
+          key: 'nft_' + nftKey + '_' + (isEur ? 'eur' : 'usd'),
           label: nftLabel,
           currency: currencyMode,
           weight: 1.1,
-          color: colorFromKey(`nft-${nftKey}-${isEur ? 'eur' : 'usd'}`, isEur ? 85 : 130),
+          color: colorFromKey('nft-' + nftKey + '-' + (isEur ? 'eur' : 'usd'), isEur ? 85 : 130),
           values: points.map((p) => Number(isEur ? p.nfts?.[nftKey]?.eur || 0 : p.nfts?.[nftKey]?.usd || 0)),
         })
       }
     }
     return lines
-  }, [filteredHistoryPoints, portfolioHistory?.coin_labels, portfolioHistory?.nft_labels, showCoinsLines, showNftsLines, showTotals, currencyMode])
+  }, [
+    currencyMode,
+    filteredHistoryPoints,
+    portfolioHistory?.coin_labels,
+    portfolioHistory?.exchange_accounts,
+    portfolioHistory?.nft_labels,
+    selectedExchangeKeys,
+    showCoinsLines,
+    showNftsLines,
+    showTotals,
+  ])
 
   const historyChart = React.useMemo(() => {
     const points = filteredHistoryPoints
-    if (points.length < 2 || historyLines.length === 0) {
+    const renderableLines = historyLines.filter(
+      (line) => line.values.filter((value) => value != null && Number.isFinite(value)).length >= 2
+    )
+    if (points.length < 2 || renderableLines.length === 0) {
       return { lines: [] as Array<ChartLine & { d: string }>, yMin: 0, yMax: 1, yTicks: [] as Array<{ y: number; label: string }> }
     }
 
@@ -687,9 +743,9 @@ export default function Dashboard({
 
     let yMin = Number.POSITIVE_INFINITY
     let yMax = Number.NEGATIVE_INFINITY
-    for (const line of historyLines) {
+    for (const line of renderableLines) {
       for (const value of line.values) {
-        if (!Number.isFinite(value)) continue
+        if (value == null || !Number.isFinite(value)) continue
         if (value < yMin) yMin = value
         if (value > yMax) yMax = value
       }
@@ -710,9 +766,19 @@ export default function Dashboard({
     const xOf = (index: number) => padLeft + (index / (points.length - 1)) * innerW
     const yOf = (value: number) => padTop + (1 - (value - yMin) / yDen) * innerH
 
-    const withPath = historyLines.map((line) => {
+    const withPath = renderableLines.map((line) => {
+      let drawing = false
       const d = line.values
-        .map((value, idx) => `${idx === 0 ? 'M' : 'L'}${xOf(idx).toFixed(2)},${yOf(value).toFixed(2)}`)
+        .map((value, idx) => {
+          if (value == null || !Number.isFinite(value)) {
+            drawing = false
+            return ''
+          }
+          const command = drawing ? 'L' : 'M'
+          drawing = true
+          return command + xOf(idx).toFixed(2) + ',' + yOf(value).toFixed(2)
+        })
+        .filter(Boolean)
         .join(' ')
       return { ...line, d }
     })
@@ -741,17 +807,19 @@ export default function Dashboard({
     if (!historyHoverLineKey) return null
     const line = historyChart.lines.find((item) => item.key === historyHoverLineKey)
     if (!line || historyHoverIndex == null) return null
+    const value = line.values[historyHoverIndex]
+    if (value == null || !Number.isFinite(value)) return null
     return {
       key: line.key,
       label: line.label,
       currency: line.currency,
       color: line.color,
-      value: Number(line.values[historyHoverIndex] || 0),
+      value,
     }
   }, [historyChart.lines, historyHoverIndex, historyHoverLineKey])
 
   const historyExtremes = React.useMemo(() => {
-    if (historyChart.lines.length === 0) return null
+    if (historyChart.lines.length !== 1) return null
     const focusLine = historyChart.lines[0]
     if (!focusLine || focusLine.values.length === 0) return null
 
@@ -760,8 +828,8 @@ export default function Dashboard({
     let minValue = Number.POSITIVE_INFINITY
     let maxValue = Number.NEGATIVE_INFINITY
     focusLine.values.forEach((raw, index) => {
-      const value = Number(raw)
-      if (!Number.isFinite(value)) return
+      if (raw == null || !Number.isFinite(raw)) return
+      const value = raw
       if (value < minValue) {
         minValue = value
         minIndex = index
@@ -990,7 +1058,9 @@ export default function Dashboard({
           {historyChart.lines.length === 0 ? (
             <Box sx={{ py: 1, mb: 1 }}>
               <Typography color="text.secondary">
-                Not enough sync history yet. Run sync on multiple days to build the chart.
+                {exchangeHistoryMode
+                  ? 'Not enough exchange account history yet. Run sync on multiple days to build the selected series.'
+                  : 'Not enough sync history yet. Run sync on multiple days to build the chart.'}
               </Typography>
             </Box>
           ) : (
@@ -1107,18 +1177,22 @@ export default function Dashboard({
                   ) : null}
 
                   {historyHoverIndex != null
-                    ? historyChart.lines.map((line) => (
-                        <circle
-                          key={`hover-dot-${line.key}`}
-                          cx={historyChart.xOf(historyHoverIndex)}
-                          cy={historyChart.yOf(Number(line.values[historyHoverIndex] || 0))}
-                          r={line.key === historyHoverLineKey ? 5 : line.weight > 2 ? 4 : 3}
-                          fill={line.color}
-                          stroke="white"
-                          strokeWidth="1.5"
-                          opacity={line.key === historyHoverLineKey ? 1 : 0.75}
-                        />
-                      ))
+                    ? historyChart.lines.map((line) => {
+                        const value = line.values[historyHoverIndex]
+                        if (value == null || !Number.isFinite(value)) return null
+                        return (
+                          <circle
+                            key={'hover-dot-' + line.key}
+                            cx={historyChart.xOf(historyHoverIndex)}
+                            cy={historyChart.yOf(value)}
+                            r={line.key === historyHoverLineKey ? 5 : line.weight > 2 ? 4 : 3}
+                            fill={line.color}
+                            stroke="white"
+                            strokeWidth="1.5"
+                            opacity={line.key === historyHoverLineKey ? 1 : 0.75}
+                          />
+                        )
+                      })
                     : null}
 
                   {historyChart.xTickIndices.map((index) => (
@@ -1167,7 +1241,9 @@ export default function Dashboard({
                       let nearestKey: string | null = null
                       let nearestDist = Number.POSITIVE_INFINITY
                       for (const line of historyChart.lines) {
-                        const ly = historyChart.yOf(Number(line.values[clamped] || 0))
+                        const value = line.values[clamped]
+                        if (value == null || !Number.isFinite(value)) continue
+                        const ly = historyChart.yOf(value)
                         const dist = Math.abs(ly - y)
                         if (dist < nearestDist) {
                           nearestDist = dist
@@ -1247,61 +1323,106 @@ export default function Dashboard({
                 </Button>
               ))}
             </Stack>
-            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-              <FormControlLabel
-                control={
-                  <Checkbox
-                    checked={showTotals}
-                    onChange={(e) => {
-                      const next = e.target.checked
-                      if (!next) {
-                        const activeCount =
-                          (showTotals ? 1 : 0) + (showCoinsLines ? 1 : 0) + (showNftsLines ? 1 : 0)
-                        if (activeCount <= 1) return
-                      }
-                      setShowTotals(next)
-                    }}
-                    size="small"
+            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap alignItems="center">
+              <FormControl size="small" sx={{ minWidth: { xs: 230, sm: 280 } }}>
+                <InputLabel id="history-exchange-accounts-label" shrink>Exchange accounts</InputLabel>
+                <Select
+                  labelId="history-exchange-accounts-label"
+                  multiple
+                  value={selectedExchangeKeys}
+                  label="Exchange accounts"
+                  displayEmpty
+                  onChange={(event) => {
+                    const raw = event.target.value
+                    const next = typeof raw === 'string' ? raw.split(',') : raw
+                    setSelectedExchangeKeys(next.includes('__total__') ? [] : next)
+                    setHistoryHoverIndex(null)
+                    setHistoryHoverLineKey(null)
+                    setHistoryTooltipPos(null)
+                  }}
+                  renderValue={(selected) => {
+                    const keys = selected as string[]
+                    if (keys.length === 0) return 'Total Portfolio'
+                    if (keys.length === 1) {
+                      const account = portfolioHistory?.exchange_accounts?.[keys[0]]
+                      return account?.label || '1 exchange account'
+                    }
+                    return keys.length + ' exchange accounts'
+                  }}
+                >
+                  <MenuItem value="__total__">
+                    <Checkbox checked={selectedExchangeKeys.length === 0} size="small" />
+                    <ListItemText primary="Total Portfolio" secondary="All exchanges, wallets and NFTs" />
+                  </MenuItem>
+                  {exchangeAccountOptions.map(([key, account]) => (
+                    <MenuItem key={key} value={key}>
+                      <Checkbox checked={selectedExchangeKeys.includes(key)} size="small" />
+                      <ListItemText
+                        primary={account.label}
+                        secondary={account.provider.toUpperCase()}
+                      />
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              {!exchangeHistoryMode ? (
+                <>
+                  <FormControlLabel
+                    control={
+                      <Checkbox
+                        checked={showTotals}
+                        onChange={(e) => {
+                          const next = e.target.checked
+                          if (!next) {
+                            const activeCount =
+                              (showTotals ? 1 : 0) + (showCoinsLines ? 1 : 0) + (showNftsLines ? 1 : 0)
+                            if (activeCount <= 1) return
+                          }
+                          setShowTotals(next)
+                        }}
+                        size="small"
+                      />
+                    }
+                    label="Totals"
                   />
-                }
-                label="Totals"
-              />
-              <FormControlLabel
-                control={
-                  <Checkbox
-                    checked={showCoinsLines}
-                    onChange={(e) => {
-                      const next = e.target.checked
-                      if (!next) {
-                        const activeCount =
-                          (showTotals ? 1 : 0) + (showCoinsLines ? 1 : 0) + (showNftsLines ? 1 : 0)
-                        if (activeCount <= 1) return
-                      }
-                      setShowCoinsLines(next)
-                    }}
-                    size="small"
+                  <FormControlLabel
+                    control={
+                      <Checkbox
+                        checked={showCoinsLines}
+                        onChange={(e) => {
+                          const next = e.target.checked
+                          if (!next) {
+                            const activeCount =
+                              (showTotals ? 1 : 0) + (showCoinsLines ? 1 : 0) + (showNftsLines ? 1 : 0)
+                            if (activeCount <= 1) return
+                          }
+                          setShowCoinsLines(next)
+                        }}
+                        size="small"
+                      />
+                    }
+                    label="Coins"
                   />
-                }
-                label="Coins"
-              />
-              <FormControlLabel
-                control={
-                  <Checkbox
-                    checked={showNftsLines}
-                    onChange={(e) => {
-                      const next = e.target.checked
-                      if (!next) {
-                        const activeCount =
-                          (showTotals ? 1 : 0) + (showCoinsLines ? 1 : 0) + (showNftsLines ? 1 : 0)
-                        if (activeCount <= 1) return
-                      }
-                      setShowNftsLines(next)
-                    }}
-                    size="small"
+                  <FormControlLabel
+                    control={
+                      <Checkbox
+                        checked={showNftsLines}
+                        onChange={(e) => {
+                          const next = e.target.checked
+                          if (!next) {
+                            const activeCount =
+                              (showTotals ? 1 : 0) + (showCoinsLines ? 1 : 0) + (showNftsLines ? 1 : 0)
+                            if (activeCount <= 1) return
+                          }
+                          setShowNftsLines(next)
+                        }}
+                        size="small"
+                      />
+                    }
+                    label="NFTs"
                   />
-                }
-                label="NFTs"
-              />
+                </>
+              ) : null}
             </Stack>
           </Stack>
         </CardContent>

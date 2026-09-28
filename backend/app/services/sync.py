@@ -200,6 +200,48 @@ def _aggregate_holdings(rows: list[dict]) -> list[dict]:
     return list(combined.values())
 
 
+def _exchange_snapshot_rows(
+    exchange_rows: list[Account],
+    visible_holdings: list[dict],
+    price_map: dict[str, dict],
+) -> list[dict[str, object]]:
+    """Build per-configured-account values for historical snapshots."""
+    totals_by_account: dict[int, dict[str, float]] = {
+        int(account.id): {"eur": 0.0, "usd": 0.0}
+        for account in exchange_rows
+        if account.id is not None
+    }
+    for holding in visible_holdings:
+        account_id = int(holding.get("account_id") or 0)
+        totals = totals_by_account.get(account_id)
+        if totals is None:
+            continue
+        price = price_map.get(str(holding.get("price_key") or ""), {})
+        quantity = float(holding.get("qty") or 0.0)
+        totals["eur"] += quantity * float(price.get("price_eur") or 0.0)
+        totals["usd"] += quantity * float(price.get("price_usd") or 0.0)
+
+    out: list[dict[str, object]] = []
+    for account in sorted(exchange_rows, key=lambda row: int(row.id or 0)):
+        if account.id is None:
+            continue
+        account_id = int(account.id)
+        provider = str(account.provider or "").strip().lower()
+        label = str(account.label or account.identifier or provider.upper()).strip()
+        values = totals_by_account[account_id]
+        out.append(
+            {
+                "key": f"account:{account_id}",
+                "account_id": account_id,
+                "provider": provider,
+                "label": label,
+                "eur": values["eur"],
+                "usd": values["usd"],
+            }
+        )
+    return out
+
+
 def _sync_binance_accounts() -> list[dict]:
     return _sync_binance_accounts_with_rows()
 
@@ -823,6 +865,7 @@ def sync_all(trigger: str = "manual") -> None:
                 {"key": key, "qty": 1.0, "unit_eur": float(vals["eur"]), "unit_usd": float(vals["usd"]), **vals}
                 for key, vals in sorted(nft_totals_by_key.items(), key=lambda kv: float(kv[1]["eur"]), reverse=True)
             ],
+            "exchanges": _exchange_snapshot_rows(exchange_rows, visible_holdings, price_map),
         }
 
         _set_state(progress=92, message="Persisting snapshot and holdings...")

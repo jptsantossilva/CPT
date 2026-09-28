@@ -117,6 +117,7 @@ def build_portfolio_history(rows: list[Any]) -> dict[str, Any]:
     points: list[dict[str, Any]] = []
     coin_labels: dict[str, str] = {}
     nft_labels: dict[str, str] = {}
+    exchange_accounts: dict[str, dict[str, Any]] = {}
 
     for row in rows:
         meta = _snapshot_meta(row)
@@ -144,6 +145,29 @@ def build_portfolio_history(rows: list[Any]) -> dict[str, Any]:
             nft_labels[key] = name
             nfts_map[key] = {"eur": _safe_float(nft.get("eur")), "usd": _safe_float(nft.get("usd"))}
 
+        exchanges_map: dict[str, dict[str, float]] = {}
+        for exchange in meta.get("exchanges") or []:
+            if not isinstance(exchange, dict):
+                continue
+            key = str(exchange.get("key") or "").strip()
+            try:
+                account_id = int(exchange.get("account_id"))
+            except (TypeError, ValueError):
+                continue
+            if not key or account_id <= 0:
+                continue
+            provider = str(exchange.get("provider") or "").strip().lower()
+            label = str(exchange.get("label") or provider.upper() or key).strip()
+            exchange_accounts[key] = {
+                "account_id": account_id,
+                "provider": provider,
+                "label": label,
+            }
+            exchanges_map[key] = {
+                "eur": _safe_float(exchange.get("eur")),
+                "usd": _safe_float(exchange.get("usd")),
+            }
+
         coins_eur = _safe_float(totals.get("coins_eur", getattr(row, "total_eur", 0.0)))
         coins_usd = _safe_float(totals.get("coins_usd", getattr(row, "total_usd", 0.0)))
         nfts_eur = _safe_float(totals.get("nfts_eur", 0.0))
@@ -164,6 +188,7 @@ def build_portfolio_history(rows: list[Any]) -> dict[str, Any]:
                 },
                 "coins": coins_map,
                 "nfts": nfts_map,
+                "exchanges": exchanges_map,
             }
         )
 
@@ -171,4 +196,5 @@ def build_portfolio_history(rows: list[Any]) -> dict[str, Any]:
         "points": points,
         "coin_labels": coin_labels,
         "nft_labels": nft_labels,
+        "exchange_accounts": exchange_accounts,
     }

@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from backend.app.models import Snapshot
+from backend.app.models import Account, Snapshot
 from backend.app.services import scheduler, sync
 
 
@@ -100,6 +100,43 @@ def test_persist_daily_snapshot_replaces_same_day_entry():
         assert float(snap.total_usd or 0) == 220.0
         meta = json.loads(snap.meta or "{}")
         assert int(meta.get("holdings_count", 0)) == 3
+
+
+def test_exchange_snapshot_rows_aggregate_sources_and_exclude_wallets():
+    accounts = [
+        Account(id=7, provider="okx", identifier="bec1", label="OKX-bec1", is_exchange=True),
+        Account(id=8, provider="kraken", identifier="main", is_exchange=True),
+    ]
+    holdings = [
+        {"account_id": 7, "source_key": "okx:7:main:main", "price_key": "symbol:BTC", "qty": 1},
+        {"account_id": 7, "source_key": "okx:7:sub:trade", "price_key": "symbol:BTC", "qty": 0.5},
+        {"account_id": 99, "source_key": "wallet:99", "price_key": "symbol:ETH", "qty": 10},
+    ]
+    price_map = {
+        "symbol:BTC": {"price_eur": 20.0, "price_usd": 25.0},
+        "symbol:ETH": {"price_eur": 3.0, "price_usd": 4.0},
+    }
+
+    out = sync._exchange_snapshot_rows(accounts, holdings, price_map)
+
+    assert out == [
+        {
+            "key": "account:7",
+            "account_id": 7,
+            "provider": "okx",
+            "label": "OKX-bec1",
+            "eur": 30.0,
+            "usd": 37.5,
+        },
+        {
+            "key": "account:8",
+            "account_id": 8,
+            "provider": "kraken",
+            "label": "main",
+            "eur": 0.0,
+            "usd": 0.0,
+        },
+    ]
 
 
 def test_compute_next_run_weekly_uses_day_of_week_and_time():

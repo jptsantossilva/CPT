@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2026.09.28]
+
+### Added
+- Added multi-account exchange balance history to the Dashboard portfolio chart,
+  with one EUR/USD series per configured account and gap-safe legacy history.
+
+## [2026.09.27]
+
+### Changed
+- Added two-click "Show only" filters for exchange/wallet and chain options on
+  the Coins page, plus a one-click "Show all" reset.
+
 ## [2026.09.25]
 
 ### Added

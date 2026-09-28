@@ -101,12 +101,18 @@ export type PortfolioHistoryPoint = {
   }
   coins: Record<string, { eur: number; usd: number }>
   nfts: Record<string, { eur: number; usd: number }>
+  exchanges: Record<string, { eur: number; usd: number }>
 }
 
 export type PortfolioHistoryResponse = {
   points: PortfolioHistoryPoint[]
   coin_labels: Record<string, string>
   nft_labels: Record<string, string>
+  exchange_accounts: Record<string, {
+    account_id: number
+    provider: ExchangeProvider
+    label: string
+  }>
 }
 
 export type FiatCashFlow = {
