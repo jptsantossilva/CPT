@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2026.10.02]
+
+### Fixed
+- Restored native BTC and SOL valuation when large Solana wallets contain many
+  unknown tokens by preventing repeated CoinGecko catalogue requests after a
+  provider failure and adding an explicit SOL provider mapping.
+- Added mint-aware SPL token pricing so Solana assets use their unique contract
+  identity instead of ambiguous symbols, while unknown tokens remain safely
+  unpriced.
+
 ## [2026.09.28]
 
 ### Added

@@ -32,7 +32,7 @@ def test_partial_exchange_sync_persists_success_but_skips_snapshot(monkeypatch, 
         ),
     )
     monkeypatch.setattr(sync.prices, "fetch_prices", lambda _symbols: {"BTC": {"price_eur": 10, "price_usd": 11, "source": "test"}})
-    monkeypatch.setattr(sync.prices, "fetch_evm_token_prices", lambda _rows: {})
+    monkeypatch.setattr(sync.prices, "fetch_contract_token_prices", lambda _rows: {})
     sync.sync_all()
     with Session(engine) as session:
         assert len(session.exec(select(Holding)).all()) == 1

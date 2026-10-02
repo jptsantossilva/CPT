@@ -58,6 +58,7 @@ _CONTRACT_PLATFORM_IDS = {
     "ethereum": "ethereum",
     "base": "base",
     "polygon": "polygon-pos",
+    "solana": "solana",
 }
 
 # Frequently held, unambiguous contracts. These avoid loading the full
@@ -75,6 +76,8 @@ _KNOWN_CONTRACT_IDS = {
     "base:0x0555e30da8f98308edb960aa94c0db47230d2b9c": "wrapped-bitcoin",
     # Polygon PoS
     "polygon-pos:0x3c499c542cef5e3811e1192ce70d8cc03d5c3359": "usd-coin",
+    # Solana
+    "solana:epjfwdd5aufqssqem2qn1xzybapc8g4weggkzwytdt1v": "usd-coin",
 }
 
 _rate_limit_lock = Lock()
@@ -320,8 +323,8 @@ def _load_contract_id_map(reload: bool = False) -> Dict[str, str] | None:
     return None
 
 
-def fetch_evm_token_prices(tokens: List[dict]) -> Dict[str, dict]:
-    """Return ERC-20 prices keyed by contract-aware ``price_key``.
+def fetch_contract_token_prices(tokens: List[dict]) -> Dict[str, dict]:
+    """Return EVM/Solana token prices keyed by contract-aware ``price_key``.
 
     Tokens absent from CoinGecko, unsupported chains and provider failures are
     explicitly unpriced. Symbol pricing is never used as a fallback.
@@ -417,6 +420,11 @@ def fetch_evm_token_prices(tokens: List[dict]) -> Dict[str, dict]:
     return out
 
 
+def fetch_evm_token_prices(tokens: List[dict]) -> Dict[str, dict]:
+    """Backward-compatible wrapper for existing callers and tests."""
+    return fetch_contract_token_prices(tokens)
+
+
 def _fetch_coin_markets(ids: List[str]) -> Dict[str, dict] | None:
     """Fetch one non-essential icon batch; fail fast on provider errors."""
     if not ids:
@@ -499,6 +507,12 @@ def fetch_prices(symbols: List[str]) -> Dict[str, dict]:
     fiat_symbols = {str(symbol).upper() for symbol in symbols} & _FIAT_SYMBOLS
     fiat_rates = _load_ecb_rates(fiat_symbols) if fiat_symbols else {}
 
+    # Resolve all symbols from one mapping snapshot. In particular, do not
+    # refetch /coins/list once per symbol when that provider request fails.
+    overrides = _load_symbol_mappings()
+    coin_list: Dict[str, str] | None = None
+    coin_list_loaded = False
+
     # First, serve from cache when valid
     for s in symbols:
         symbol = s.upper()
@@ -526,7 +540,16 @@ def fetch_prices(symbols: List[str]) -> Dict[str, dict]:
             out[s] = cached["data"].copy()
             continue
 
-        cid, lookup_failed = _resolve_symbol_id(s)
+        cid = overrides.get(symbol)
+        lookup_failed = False
+        if not cid:
+            if not coin_list_loaded:
+                coin_list = _load_coin_list()
+                coin_list_loaded = True
+            if coin_list is None:
+                lookup_failed = True
+            else:
+                cid = coin_list.get(s.lower())
         if cid:
             symbol_to_id[s] = cid
             to_query_ids.append(cid)

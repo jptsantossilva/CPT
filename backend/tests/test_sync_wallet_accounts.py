@@ -211,6 +211,35 @@ def test_sync_wallet_accounts_solana_wallet_uses_solana_service(monkeypatch):
     assert calls["btc"] == 0
 
 
+def test_sync_wallet_accounts_prices_spl_tokens_by_mint(monkeypatch):
+    mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+    rows = [
+        SimpleNamespace(
+            id=12,
+            provider="wallet",
+            identifier="solana:5H6v5T95h4L43KJfFv4Qw8VwM6NfY4uqpN7EzWLKQfU5",
+        ),
+    ]
+    monkeypatch.setattr(sync, "get_session", lambda: _FakeSessionCtx(rows))
+    monkeypatch.setattr(
+        sync.solana,
+        "fetch_wallet_balances",
+        lambda _address: [{
+            "symbol": "USDC",
+            "balance": 12.5,
+            "asset_kind": "spl",
+            "contract": mint,
+        }],
+    )
+
+    holding = sync._sync_wallet_accounts()[0]
+
+    assert holding["asset_key"] == f"spl:solana:{mint}"
+    assert holding["price_key"] == f"spl:solana:{mint}"
+    assert holding["asset_kind"] == "spl"
+    assert holding["contract_address"] == mint
+
+
 def test_sync_wallet_accounts_separates_native_eth_and_hides_erc20_spoof(monkeypatch):
     rows = [
         SimpleNamespace(id=21, provider="wallet", identifier="0x470BaB7c3E3e4FaDBA43AfAfc843149C6cBc3cFa"),

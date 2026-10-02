@@ -126,5 +126,11 @@ def test_fetch_wallet_balances_includes_spl_tokens(monkeypatch):
     )
 
     assert {"symbol": "SOL", "name": "Solana", "balance": 3.0} in out
-    assert {"symbol": "USDC", "name": "USD Coin", "balance": 2.5} in out
-    assert {"symbol": "HNT", "name": "Helium", "balance": 1.5} in out
+    assert {
+        "symbol": "USDC", "name": "USD Coin", "balance": 2.5,
+        "asset_kind": "spl", "contract": usdc_mint,
+    } in out
+    assert {
+        "symbol": "HNT", "name": "Helium", "balance": 1.5,
+        "asset_kind": "spl", "contract": helium_mint,
+    } in out

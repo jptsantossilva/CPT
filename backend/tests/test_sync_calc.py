@@ -116,6 +116,40 @@ def test_fetch_prices_uses_symbol_override_for_eth(monkeypatch):
     assert result["ETH"]["price_usd"] == 2000.0
 
 
+def test_fetch_prices_loads_failed_coin_list_only_once(monkeypatch):
+    prices._price_cache.clear()
+    calls = []
+    monkeypatch.setattr(
+        prices,
+        "_load_symbol_mappings",
+        lambda reload=False: {"BTC": "bitcoin", "SOL": "solana"},
+    )
+    monkeypatch.setattr(
+        prices,
+        "_load_coin_list",
+        lambda reload=False: calls.append(True) or None,
+    )
+    monkeypatch.setattr(
+        prices,
+        "_fetch_simple_price",
+        lambda ids: {
+            "bitcoin": {"eur": 50000, "usd": 55000},
+            "solana": {"eur": 125, "usd": 135},
+        },
+    )
+
+    result = prices.fetch_prices(["BTC", "UNKNOWN1", "UNKNOWN2", "SOL"])
+
+    assert calls == [True]
+    assert result["BTC"]["price_usd"] == 55000
+    assert result["SOL"]["price_usd"] == 135
+    assert result["UNKNOWN1"]["source"] == "coingecko_error"
+
+
+def test_default_price_mapping_includes_sol():
+    assert db.DEFAULT_PRICE_SYMBOL_MAPPINGS["SOL"]["provider_id"] == "solana"
+
+
 def test_fetch_icon_urls_uses_overrides_for_gun_and_gps(monkeypatch):
     prices._icon_cache.clear()
     monkeypatch.setattr(prices, "_load_symbol_mappings", lambda reload=False: {"GUN": "gunz", "GPS": "goplus-security"})
@@ -204,7 +238,29 @@ def test_load_contract_id_map_indexes_supported_platform_contracts(monkeypatch):
     assert mapping == {
         "ethereum:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": "usd-coin",
         "base:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": "usd-coin",
+        "solana:epjfwdd5aufqssqem2qn1xzybapc8g4weggkzwytdt1v": "usd-coin",
     }
+
+
+def test_fetch_contract_token_prices_supports_solana_mints(monkeypatch):
+    prices._contract_price_cache.clear()
+    mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+    monkeypatch.setattr(
+        prices,
+        "_fetch_simple_price",
+        lambda ids: {"usd-coin": {"eur": 0.92, "usd": 1.0}},
+    )
+
+    key = f"spl:solana:{mint}"
+    result = prices.fetch_contract_token_prices([{
+        "chain": "solana",
+        "contract_address": mint,
+        "price_key": key,
+        "asset": "USDC",
+    }])
+
+    assert result[key]["price_usd"] == 1.0
+    assert result[key]["source"] == "coingecko_contract"
 
 
 def test_fetch_evm_token_prices_leaves_provider_failures_unpriced(monkeypatch):

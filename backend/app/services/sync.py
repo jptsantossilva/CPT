@@ -459,16 +459,29 @@ def _sync_wallet_accounts_with_rows(
                 qty = float(b.get("balance", 0) or 0)
                 if qty <= 0:
                     continue
+                raw_kind = str(b.get("asset_kind") or "").strip().lower()
+                mint = str(b.get("contract") or b.get("mint") or "").strip()
+                is_spl = raw_kind == "spl" or bool(mint)
+                if is_spl:
+                    asset_key = f"spl:solana:{mint}"
+                    price_key = asset_key
+                    asset_kind = "spl"
+                    contract_address = mint
+                else:
+                    asset_key = f"native:solana:{asset.upper()}"
+                    price_key = _symbol_price_key(asset)
+                    asset_kind = "native"
+                    contract_address = None
                 out.append(
                     {
                         "account_id": a.id,
                         "asset": asset,
                         "qty": qty,
                         "chain": "solana",
-                        "asset_key": f"symbol:{asset}",
-                        "price_key": _symbol_price_key(asset),
-                        "asset_kind": None,
-                        "contract_address": None,
+                        "asset_key": asset_key,
+                        "price_key": price_key,
+                        "asset_kind": asset_kind,
+                        "contract_address": contract_address,
                         "visibility": "visible",
                         "risk_reason": None,
                     }
@@ -743,15 +756,16 @@ def sync_all(trigger: str = "manual") -> None:
             ),
         )
 
-        symbol_holdings = [h for h in visible_holdings if h.get("asset_kind") != "erc20"]
-        contract_holdings = [h for h in visible_holdings if h.get("asset_kind") == "erc20"]
+        contract_kinds = {"erc20", "spl"}
+        symbol_holdings = [h for h in visible_holdings if h.get("asset_kind") not in contract_kinds]
+        contract_holdings = [h for h in visible_holdings if h.get("asset_kind") in contract_kinds]
         symbols = sorted({str(h["asset"]) for h in symbol_holdings})
         _set_state(progress=84, message=f"Fetching prices for {len(visible_holdings)} assets...")
         symbol_prices = prices.fetch_prices(symbols)
         price_map: dict[str, dict] = {
             _symbol_price_key(sym): data for sym, data in symbol_prices.items()
         }
-        contract_prices = prices.fetch_evm_token_prices(contract_holdings)
+        contract_prices = prices.fetch_contract_token_prices(contract_holdings)
         price_map.update(contract_prices)
         requested_price_keys = {
             str(h.get("price_key") or "").strip()

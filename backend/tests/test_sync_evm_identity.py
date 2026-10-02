@@ -96,7 +96,7 @@ def test_sync_excludes_hidden_erc20_spoof_from_prices_and_snapshot(monkeypatch, 
         contract_calls.extend(rows)
         return {}
 
-    monkeypatch.setattr(sync.prices, "fetch_evm_token_prices", fake_contract_prices)
+    monkeypatch.setattr(sync.prices, "fetch_contract_token_prices", fake_contract_prices)
 
     sync.sync_all("manual")
 
@@ -162,7 +162,7 @@ def test_sync_reuses_recent_price_on_transient_contract_failure(monkeypatch, tmp
     monkeypatch.setattr(sync.prices, "fetch_prices", lambda symbols: {})
     monkeypatch.setattr(
         sync.prices,
-        "fetch_evm_token_prices",
+        "fetch_contract_token_prices",
         lambda rows: {price_key: {"price_eur": 0.0, "price_usd": 0.0, "source": "coingecko_contract_error"}},
     )
 

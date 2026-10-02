@@ -180,8 +180,10 @@ def _fetch_spl_token_balances(
     timeout: float = 12.0,
     client: httpx.Client | None = None,
 ) -> list[dict]:
-    totals_by_symbol: dict[str, float] = {}
-    name_by_symbol: dict[str, str | None] = {}
+    # Mints, unlike symbols, are unique on Solana. Keep them through the sync
+    # so similarly named or unknown tokens cannot inherit another asset's price.
+    totals_by_mint: dict[str, float] = {}
+    metadata_by_mint: dict[str, tuple[str, str | None]] = {}
     token_registry = _load_token_registry(timeout=timeout)
 
     def _collect_for_program(program_id: str) -> None:
@@ -224,9 +226,8 @@ def _fetch_spl_token_balances(
             symbol, name = _token_symbol_and_name(mint, token_registry, timeout=timeout)
             if not symbol:
                 continue
-            totals_by_symbol[symbol] = totals_by_symbol.get(symbol, 0.0) + balance
-            if name and symbol not in name_by_symbol:
-                name_by_symbol[symbol] = name
+            totals_by_mint[mint] = totals_by_mint.get(mint, 0.0) + balance
+            metadata_by_mint[mint] = (symbol, name)
 
     for program_id in (_SPL_TOKEN_PROGRAM_ID, _SPL_TOKEN_2022_PROGRAM_ID):
         try:
@@ -240,13 +241,19 @@ def _fetch_spl_token_balances(
             )
 
     out: list[dict] = []
-    for symbol in sorted(totals_by_symbol.keys()):
-        balance = totals_by_symbol.get(symbol, 0.0)
+    for mint in sorted(totals_by_mint):
+        balance = totals_by_mint.get(mint, 0.0)
         if balance <= 0:
             continue
-        row = {"symbol": symbol, "balance": balance}
-        if name_by_symbol.get(symbol):
-            row["name"] = name_by_symbol[symbol]
+        symbol, name = metadata_by_mint[mint]
+        row = {
+            "symbol": symbol,
+            "balance": balance,
+            "asset_kind": "spl",
+            "contract": mint,
+        }
+        if name:
+            row["name"] = name
         out.append(row)
     return out
 
