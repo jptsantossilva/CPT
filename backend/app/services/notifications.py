@@ -306,6 +306,8 @@ def _extract_sync_snapshot_data(snapshot: Snapshot | None) -> tuple[dict[str, fl
             "value_usd": value_usd,
             "unit_eur": unit_eur,
             "unit_usd": unit_usd,
+            "priced_qty_eur": _safe_float(row.get("priced_qty_eur")),
+            "priced_qty_usd": _safe_float(row.get("priced_qty_usd")),
         }
 
     for row in meta.get("nfts") or []:
@@ -470,6 +472,26 @@ def _compute_unit_price_movers(
         if old_unit <= 0:
             continue
         new_unit = float(current.get(selected_unit) or 0.0)
+        # Older snapshots divided priced USDC value by total quantity,
+        # including unpriced contracts that reused the same symbol. That can
+        # manufacture large moves (for example -70%) despite a ~$1 market
+        # price. Skip only the corrupted legacy comparison; new snapshots carry
+        # priced_qty_* and subsequent comparisons use the corrected unit price.
+        if (
+            str(current.get("asset_type") or "") == "coin"
+            and str(current.get("asset_label") or "").upper() == "USDC"
+        ):
+            current_unit_usd = float(current.get("unit_usd") or 0.0)
+            base_unit_usd = float(base.get("unit_usd") or 0.0)
+            base_has_priced_qty = float(base.get("priced_qty_usd") or 0.0) > 0
+            if (
+                not base_has_priced_qty
+                and (
+                    not 0.8 <= base_unit_usd <= 1.2
+                    or not 0.8 <= current_unit_usd <= 1.2
+                )
+            ):
+                continue
         delta_abs = new_unit - old_unit
         delta_pct = (delta_abs / old_unit) * 100.0
         moves.append(

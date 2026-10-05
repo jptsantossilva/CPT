@@ -20,6 +20,8 @@ _EVM_NATIVE_SYMBOLS = {
 _PRICE_FALLBACK_MAX_AGE = timedelta(hours=24)
 _TRANSIENT_PRICE_SOURCES = {"coingecko_error", "coingecko_contract_error", "ecb_error"}
 _EXCHANGE_PROVIDERS = {"binance", "okx", "kraken"}
+_MIN_PRICE_KEYS_FOR_COVERAGE_GUARD = 20
+_MIN_SNAPSHOT_PRICED_COVERAGE = 0.10
 
 _state_lock = Lock()
 _sync_state: dict[str, object] = {
@@ -175,6 +177,17 @@ def _apply_previous_price_fallback(
             price_map[price_key] = entry
             quality["unpriced"] += 1
     return quality
+
+
+def _is_severely_degraded_price_quality(quality: dict[str, int]) -> bool:
+    """Return whether provider failures make a historical snapshot misleading."""
+    current = max(0, int(quality.get("current") or 0))
+    reused = max(0, int(quality.get("reused") or 0))
+    unpriced = max(0, int(quality.get("unpriced") or 0))
+    total = current + reused + unpriced
+    if total < _MIN_PRICE_KEYS_FOR_COVERAGE_GUARD:
+        return False
+    return ((current + reused) / total) < _MIN_SNAPSHOT_PRICED_COVERAGE
 
 
 def _aggregate_holdings(rows: list[dict]) -> list[dict]:
@@ -782,6 +795,7 @@ def sync_all(trigger: str = "manual") -> None:
             requested_price_keys,
             previous_prices,
         )
+        severely_degraded_prices = _is_severely_degraded_price_quality(price_quality)
         if provider_error_count:
             reused = price_quality["reused"]
             unpriced = sum(
@@ -797,12 +811,22 @@ def sync_all(trigger: str = "manual") -> None:
             warning_parts.append(
                 "External price requests failed; " + ", and ".join(details) + "."
             )
+        if severely_degraded_prices:
+            priced = price_quality["current"] + price_quality["reused"]
+            total_price_keys = priced + price_quality["unpriced"]
+            coverage_pct = (priced / total_price_keys) * 100.0 if total_price_keys else 0.0
+            warning_parts.append(
+                "Historical snapshot skipped because price coverage was only "
+                f"{coverage_pct:.1f}%."
+            )
         warning = " ".join(warning_parts) or None
 
         total_eur = 0.0
         total_usd = 0.0
         coin_totals_by_symbol: dict[str, dict[str, float]] = {}
         coin_qty_by_symbol: dict[str, float] = {}
+        coin_priced_qty_eur_by_symbol: dict[str, float] = {}
+        coin_priced_qty_usd_by_symbol: dict[str, float] = {}
         for h in visible_holdings:
             sym = h["asset"]
             p = price_map.get(str(h.get("price_key") or ""), {"price_eur": 0, "price_usd": 0})
@@ -816,6 +840,14 @@ def sync_all(trigger: str = "manual") -> None:
             curr["usd"] += value_usd
             coin_totals_by_symbol[sym] = curr
             coin_qty_by_symbol[sym] = float(coin_qty_by_symbol.get(sym) or 0.0) + qty
+            if float(p.get("price_eur") or 0.0) > 0:
+                coin_priced_qty_eur_by_symbol[sym] = (
+                    float(coin_priced_qty_eur_by_symbol.get(sym) or 0.0) + qty
+                )
+            if float(p.get("price_usd") or 0.0) > 0:
+                coin_priced_qty_usd_by_symbol[sym] = (
+                    float(coin_priced_qty_usd_by_symbol.get(sym) or 0.0) + qty
+                )
 
         nft_totals_by_key: dict[str, dict[str, object]] = {}
         nfts_total_eur = 0.0
@@ -862,14 +894,16 @@ def sync_all(trigger: str = "manual") -> None:
                     "eur": vals["eur"],
                     "usd": vals["usd"],
                     "qty": float(coin_qty_by_symbol.get(sym) or 0.0),
+                    "priced_qty_eur": float(coin_priced_qty_eur_by_symbol.get(sym) or 0.0),
+                    "priced_qty_usd": float(coin_priced_qty_usd_by_symbol.get(sym) or 0.0),
                     "unit_eur": (
-                        float(vals["eur"]) / float(coin_qty_by_symbol.get(sym) or 0.0)
-                        if float(coin_qty_by_symbol.get(sym) or 0.0) > 0
+                        float(vals["eur"]) / float(coin_priced_qty_eur_by_symbol.get(sym) or 0.0)
+                        if float(coin_priced_qty_eur_by_symbol.get(sym) or 0.0) > 0
                         else 0.0
                     ),
                     "unit_usd": (
-                        float(vals["usd"]) / float(coin_qty_by_symbol.get(sym) or 0.0)
-                        if float(coin_qty_by_symbol.get(sym) or 0.0) > 0
+                        float(vals["usd"]) / float(coin_priced_qty_usd_by_symbol.get(sym) or 0.0)
+                        if float(coin_priced_qty_usd_by_symbol.get(sym) or 0.0) > 0
                         else 0.0
                     ),
                 }
@@ -941,7 +975,7 @@ def sync_all(trigger: str = "manual") -> None:
                         visibility=str(row.get("visibility") or "visible"),
                     )
                 )
-            if not partial_sync:
+            if not partial_sync and not severely_degraded_prices:
                 # Keep a single historical snapshot per UTC day (latest run wins).
                 _persist_daily_snapshot(
                     s,

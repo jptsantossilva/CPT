@@ -1,6 +1,8 @@
 from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from backend.app.models import NotificationAnchor, NotificationConfig, Snapshot
 from backend.app.services import notifications
 
@@ -161,6 +163,47 @@ def test_compute_movers_ignores_assets_at_or_below_one_usd_threshold():
     top_up, top_down = notifications._compute_movers(current, base, currency="USD")
     assert top_up == []
     assert top_down == []
+
+
+def test_unit_price_movers_skip_corrupted_legacy_usdc_unit_price():
+    current = {
+        "coin:USDC": {
+            "asset_type": "coin", "asset_label": "USDC",
+            "value_usd": 100.0, "unit_usd": 0.9995, "priced_qty_usd": 100.0,
+        }
+    }
+    legacy = {
+        "coin:USDC": {
+            "asset_type": "coin", "asset_label": "USDC",
+            "value_usd": 100.0, "unit_usd": 0.29875,
+        }
+    }
+
+    top_up, top_down = notifications._compute_unit_price_movers(current, legacy, "USD")
+
+    assert top_up == []
+    assert top_down == []
+
+
+def test_unit_price_movers_compare_corrected_usdc_prices():
+    current = {
+        "coin:USDC": {
+            "asset_type": "coin", "asset_label": "USDC",
+            "value_usd": 100.0, "unit_usd": 0.9995, "priced_qty_usd": 100.0,
+        }
+    }
+    base = {
+        "coin:USDC": {
+            "asset_type": "coin", "asset_label": "USDC",
+            "value_usd": 100.0, "unit_usd": 1.0, "priced_qty_usd": 100.0,
+        }
+    }
+
+    top_up, top_down = notifications._compute_unit_price_movers(current, base, "USD")
+
+    assert top_up == []
+    assert len(top_down) == 1
+    assert top_down[0]["delta_pct"] == pytest.approx(-0.05)
 
 
 def test_should_run_now_inherit_requires_new_sync_snapshot(monkeypatch):

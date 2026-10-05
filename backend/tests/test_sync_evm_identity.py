@@ -123,10 +123,60 @@ def test_sync_excludes_hidden_erc20_spoof_from_prices_and_snapshot(monkeypatch, 
             "eur": 900.0,
             "usd": 1000.0,
             "qty": 0.5,
+            "priced_qty_eur": 0.5,
+            "priced_qty_usd": 0.5,
             "unit_eur": 1800.0,
             "unit_usd": 2000.0,
         }
     ]
+
+
+def test_snapshot_unit_price_excludes_unpriced_same_symbol_quantity(monkeypatch, tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'sync_unit_price.db'}", echo=False)
+    SQLModel.metadata.create_all(engine)
+    monkeypatch.setattr(sync, "get_session", lambda: Session(engine))
+    monkeypatch.setattr(db, "get_nft_blacklist_keys", lambda: set())
+    monkeypatch.setattr(sync, "_wallet_rpc_warning", lambda: None)
+
+    with Session(engine) as session:
+        session.add(Account(provider="wallet", identifier="solana:wallet", label="Wallet"))
+        session.commit()
+
+    priced_key = "spl:solana:priced-mint"
+    unpriced_key = "spl:solana:unpriced-mint"
+    holdings = [
+        {
+            "account_id": 1, "asset": "USDC", "qty": 100.0,
+            "chain": "solana", "asset_key": priced_key, "price_key": priced_key,
+            "asset_kind": "spl", "contract_address": "priced-mint", "visibility": "visible",
+        },
+        {
+            "account_id": 1, "asset": "USDC", "qty": 300.0,
+            "chain": "solana", "asset_key": unpriced_key, "price_key": unpriced_key,
+            "asset_kind": "spl", "contract_address": "unpriced-mint", "visibility": "visible",
+        },
+    ]
+    monkeypatch.setattr(sync, "_sync_binance_accounts_with_rows", lambda _rows, on_progress=None: [])
+    monkeypatch.setattr(sync, "_sync_wallet_accounts_with_rows", lambda _rows, on_progress=None: holdings)
+    monkeypatch.setattr(sync.nfts, "fetch_nfts_for_wallet", lambda _address: [])
+    monkeypatch.setattr(sync.prices, "fetch_prices", lambda symbols: {})
+    monkeypatch.setattr(
+        sync.prices,
+        "fetch_contract_token_prices",
+        lambda rows: {
+            priced_key: {"price_eur": 0.91, "price_usd": 0.9995, "source": "jupiter"},
+            unpriced_key: {"price_eur": 0.0, "price_usd": 0.0, "source": "coingecko_contract_missing"},
+        },
+    )
+
+    sync.sync_all("manual")
+
+    with Session(engine) as session:
+        snapshot = session.exec(select(Snapshot)).one()
+    coin = json.loads(snapshot.meta or "{}")["coins"][0]
+    assert coin["qty"] == 400.0
+    assert coin["priced_qty_usd"] == 100.0
+    assert coin["unit_usd"] == 0.9995
 
 
 def test_sync_reuses_recent_price_on_transient_contract_failure(monkeypatch, tmp_path):

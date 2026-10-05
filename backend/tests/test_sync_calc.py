@@ -1,7 +1,8 @@
 import httpx
+import pytest
 
 from backend.app import db
-from backend.app.services import prices
+from backend.app.services import prices, sync
 
 
 def test_fetch_prices_basic_with_monkeypatched_sources(monkeypatch):
@@ -137,6 +138,7 @@ def test_fetch_prices_loads_failed_coin_list_only_once(monkeypatch):
             "solana": {"eur": 125, "usd": 135},
         },
     )
+    monkeypatch.setattr(prices, "_fetch_coinbase_exchange_rates", lambda symbols: {})
 
     result = prices.fetch_prices(["BTC", "UNKNOWN1", "UNKNOWN2", "SOL"])
 
@@ -146,8 +148,146 @@ def test_fetch_prices_loads_failed_coin_list_only_once(monkeypatch):
     assert result["UNKNOWN1"]["source"] == "coingecko_error"
 
 
+def test_fetch_prices_uses_coinbase_for_btc_and_sol_when_coingecko_fails(monkeypatch):
+    prices._price_cache.clear()
+    monkeypatch.setattr(
+        prices,
+        "_load_symbol_mappings",
+        lambda reload=False: {"BTC": "bitcoin", "SOL": "solana"},
+    )
+    monkeypatch.setattr(prices, "_fetch_simple_price", lambda ids: None)
+    monkeypatch.setattr(prices, "_fetch_coinbase_exchange_rates", lambda symbols: {})
+    monkeypatch.setattr(
+        prices,
+        "_fetch_coinbase_spot_price",
+        lambda symbol: {
+            "price_eur": 77000.0 if symbol == "BTC" else 108.0,
+            "price_usd": 86500.0 if symbol == "BTC" else 122.0,
+            "source": "coinbase",
+        },
+    )
+
+    result = prices.fetch_prices(["BTC", "SOL"])
+
+    assert result["BTC"]["price_usd"] == 86500.0
+    assert result["SOL"]["price_usd"] == 122.0
+    assert result["BTC"]["source"] == "coinbase"
+    assert result["SOL"]["source"] == "coinbase"
+
+
+def test_fetch_coinbase_exchange_rates_returns_bulk_symbol_prices(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params.get("currency") == "USD"
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "currency": "USD",
+                    "rates": {
+                        "EUR": "0.9",
+                        "BTC": "0.00001",
+                        "USDC": "1",
+                        "ZERO": "0",
+                    },
+                }
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        prices.httpx,
+        "Client",
+        lambda **kwargs: real_client(transport=transport, **kwargs),
+    )
+
+    result = prices._fetch_coinbase_exchange_rates(["BTC", "USDC", "ZERO", "MISSING"])
+
+    assert result["BTC"]["price_usd"] == pytest.approx(100_000.0)
+    assert result["BTC"]["price_eur"] == pytest.approx(90_000.0)
+    assert result["USDC"]["price_usd"] == 1.0
+    assert result["USDC"]["price_eur"] == 0.9
+    assert result["USDC"]["source"] == "coinbase_exchange_rates"
+    assert "ZERO" not in result
+    assert "MISSING" not in result
+
+
+def test_fetch_prices_uses_one_bulk_coinbase_fallback_for_supported_symbols(monkeypatch):
+    prices._price_cache.clear()
+    monkeypatch.setattr(
+        prices,
+        "_load_symbol_mappings",
+        lambda reload=False: {
+            "BTC": "bitcoin",
+            "SOL": "solana",
+            "USDC": "usd-coin",
+            "ETH": "ethereum",
+        },
+    )
+    monkeypatch.setattr(prices, "_fetch_simple_price", lambda ids: None)
+    calls = []
+
+    def fake_coinbase(symbols):
+        calls.append(symbols)
+        return {
+            symbol: {
+                "price_eur": 0.9,
+                "price_usd": 1.0,
+                "source": "coinbase_exchange_rates",
+            }
+            for symbol in symbols
+        }
+
+    monkeypatch.setattr(prices, "_fetch_coinbase_exchange_rates", fake_coinbase)
+    monkeypatch.setattr(
+        prices,
+        "_fetch_coinbase_spot_price",
+        lambda symbol: pytest.fail(f"unexpected per-symbol fallback for {symbol}"),
+    )
+
+    result = prices.fetch_prices(["BTC", "SOL", "USDC", "ETH"])
+
+    assert calls == [["BTC", "SOL", "USDC", "ETH"]]
+    assert all(row["price_usd"] == 1.0 for row in result.values())
+    assert all(row["source"] == "coinbase_exchange_rates" for row in result.values())
+
+
+def test_fetch_prices_uses_coinbase_when_coingecko_catalogue_fails(monkeypatch):
+    prices._price_cache.clear()
+    monkeypatch.setattr(prices, "_load_symbol_mappings", lambda reload=False: {})
+    monkeypatch.setattr(prices, "_load_coin_list", lambda reload=False: None)
+    monkeypatch.setattr(
+        prices,
+        "_fetch_coinbase_exchange_rates",
+        lambda symbols: {
+            "USDC": {
+                "price_eur": 0.9,
+                "price_usd": 1.0,
+                "source": "coinbase_exchange_rates",
+            }
+        },
+    )
+
+    result = prices.fetch_prices(["USDC"])
+
+    assert result["USDC"]["price_usd"] == 1.0
+    assert result["USDC"]["source"] == "coinbase_exchange_rates"
+
+
 def test_default_price_mapping_includes_sol():
     assert db.DEFAULT_PRICE_SYMBOL_MAPPINGS["SOL"]["provider_id"] == "solana"
+
+
+def test_price_quality_guard_rejects_only_severely_degraded_large_syncs():
+    assert sync._is_severely_degraded_price_quality(
+        {"current": 21, "reused": 0, "unpriced": 355}
+    )
+    assert not sync._is_severely_degraded_price_quality(
+        {"current": 223, "reused": 0, "unpriced": 142}
+    )
+    assert not sync._is_severely_degraded_price_quality(
+        {"current": 1, "reused": 0, "unpriced": 5}
+    )
 
 
 def test_fetch_icon_urls_uses_overrides_for_gun_and_gps(monkeypatch):
@@ -247,8 +387,14 @@ def test_fetch_contract_token_prices_supports_solana_mints(monkeypatch):
     mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
     monkeypatch.setattr(
         prices,
-        "_fetch_simple_price",
-        lambda ids: {"usd-coin": {"eur": 0.92, "usd": 1.0}},
+        "_fetch_solana_mint_prices",
+        lambda tokens: {
+            next(iter(tokens)): {
+                "price_eur": 0.92,
+                "price_usd": 1.0,
+                "source": "jupiter",
+            }
+        },
     )
 
     key = f"spl:solana:{mint}"
@@ -260,7 +406,30 @@ def test_fetch_contract_token_prices_supports_solana_mints(monkeypatch):
     }])
 
     assert result[key]["price_usd"] == 1.0
-    assert result[key]["source"] == "coingecko_contract"
+    assert result[key]["source"] == "jupiter"
+
+
+def test_fetch_solana_mint_prices_preserves_base58_case(monkeypatch):
+    mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+    key = f"spl:solana:{mint}"
+    monkeypatch.setattr(prices, "_load_ecb_rates", lambda currencies: {"USD": 1.25})
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params.get("ids") == mint
+        return httpx.Response(200, json={mint: {"usdPrice": 1.0}})
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        prices.httpx,
+        "Client",
+        lambda **kwargs: real_client(transport=transport, **kwargs),
+    )
+
+    result = prices._fetch_solana_mint_prices({key: mint})
+
+    assert result[key]["price_usd"] == 1.0
+    assert result[key]["price_eur"] == 0.8
 
 
 def test_fetch_evm_token_prices_leaves_provider_failures_unpriced(monkeypatch):
@@ -288,6 +457,7 @@ def test_fetch_prices_distinguishes_provider_failure_from_missing(monkeypatch):
     prices._price_cache.clear()
     monkeypatch.setattr(prices, "_load_symbol_mappings", lambda reload=False: {"ETH": "ethereum"})
     monkeypatch.setattr(prices, "_fetch_simple_price", lambda ids: None)
+    monkeypatch.setattr(prices, "_fetch_coinbase_exchange_rates", lambda symbols: {})
 
     failed = prices.fetch_prices(["ETH"])
     assert failed["ETH"]["source"] == "coingecko_error"

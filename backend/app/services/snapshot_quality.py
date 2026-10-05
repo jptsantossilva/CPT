@@ -9,6 +9,8 @@ from typing import Any
 
 MAX_PLAUSIBLE_NATIVE_ETH_QUANTITY = 1_000_000.0
 MAX_PLAUSIBLE_PORTFOLIO_TOTAL = 1_000_000_000_000_000.0
+MIN_PRICE_KEYS_FOR_COVERAGE_AUDIT = 20
+MIN_PLAUSIBLE_PRICED_COVERAGE = 0.10
 
 
 def _number(value: Any) -> float:
@@ -43,6 +45,23 @@ def audit_snapshot(snapshot: Any) -> dict[str, Any] | None:
 
     eth_quantity = 0.0
     meta = _metadata(snapshot)
+    quality = meta.get("price_quality") if isinstance(meta.get("price_quality"), dict) else {}
+    current_prices = max(0.0, _number(quality.get("current")))
+    reused_prices = max(0.0, _number(quality.get("reused")))
+    unpriced = max(0.0, _number(quality.get("unpriced")))
+    price_key_count = current_prices + reused_prices + unpriced
+    priced_coverage = (
+        (current_prices + reused_prices) / price_key_count
+        if price_key_count > 0
+        else None
+    )
+    if (
+        price_key_count >= MIN_PRICE_KEYS_FOR_COVERAGE_AUDIT
+        and priced_coverage is not None
+        and priced_coverage < MIN_PLAUSIBLE_PRICED_COVERAGE
+    ):
+        reasons.append("severely_degraded_price_coverage")
+
     for coin in meta.get("coins") or []:
         if not isinstance(coin, dict):
             continue
@@ -59,11 +78,15 @@ def audit_snapshot(snapshot: Any) -> dict[str, Any] | None:
     suggested_reason = (
         "erc20_native_symbol_spoof"
         if "implausible_eth_quantity" in reasons
-        else "implausible_snapshot_total"
+        else (
+            "external_price_failure"
+            if "severely_degraded_price_coverage" in reasons
+            else "implausible_snapshot_total"
+        )
     )
     return {
         "detected_reasons": reasons,
         "suggested_reason": suggested_reason,
         "eth_quantity": eth_quantity,
+        "priced_coverage": priced_coverage,
     }
-

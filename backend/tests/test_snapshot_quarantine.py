@@ -45,6 +45,19 @@ def test_snapshot_audit_detects_spoofed_eth_without_changing_data():
     assert contaminated.is_valid is True
 
 
+def test_snapshot_audit_detects_severely_degraded_price_coverage():
+    meta = json.loads(_meta(0.25, 900.0, 1_000.0))
+    meta["price_quality"] = {"current": 21, "reused": 0, "unpriced": 355}
+    degraded = Snapshot(total_eur=900.0, total_usd=1_000.0, meta=json.dumps(meta))
+
+    anomaly = audit_snapshot(degraded)
+
+    assert anomaly is not None
+    assert anomaly["suggested_reason"] == "external_price_failure"
+    assert anomaly["detected_reasons"] == ["severely_degraded_price_coverage"]
+    assert anomaly["priced_coverage"] == (21 / 376)
+
+
 def test_snapshot_admin_can_audit_quarantine_and_restore(monkeypatch, tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'snapshot_admin.db'}", echo=False)
     SQLModel.metadata.create_all(engine)
@@ -83,4 +96,3 @@ def test_snapshot_admin_can_audit_quarantine_and_restore(monkeypatch, tmp_path):
     assert restored["invalid_reason"] is None
     assert restored["invalidated_at"] is None
     assert len(main.portfolio_history()["points"]) == 2
-

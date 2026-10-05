@@ -28,6 +28,12 @@ from ..models import PriceSymbolMapping
 log = logging.getLogger(__name__)
 
 COINGECKO_BASE = os.getenv("COINGECKO_API_BASE", "https://api.coingecko.com/api/v3")
+COINBASE_PRICE_BASE = os.getenv("COINBASE_PRICE_API_BASE", "https://api.coinbase.com/v2/prices")
+COINBASE_EXCHANGE_RATES_URL = os.getenv(
+    "COINBASE_EXCHANGE_RATES_URL",
+    "https://api.coinbase.com/v2/exchange-rates",
+)
+JUPITER_PRICE_URL = os.getenv("SOLANA_PRICE_API_URL", "https://lite-api.jup.ag/price/v3")
 ECB_DATA_BASE = os.getenv(
     "ECB_DATA_API_BASE", "https://data-api.ecb.europa.eu/service/data"
 )
@@ -84,6 +90,8 @@ _rate_limit_lock = Lock()
 _rate_limit_until = 0.0
 _icon_fetch_lock = Lock()
 _ICON_BATCH_SIZE = 100
+_JUPITER_BATCH_SIZE = 50
+_COINBASE_FALLBACK_SYMBOLS = {"BTC", "SOL", "USDC"}
 
 # Icon cache: symbol -> {ts, data}
 _icon_cache: Dict[str, dict] = {}
@@ -258,6 +266,125 @@ def _fetch_simple_price(ids: List[str]) -> Dict[str, dict] | None:
     return None
 
 
+def _fetch_coinbase_spot_price(symbol: str) -> dict | None:
+    """Fetch a canonical native-asset spot price without authentication."""
+    key = str(symbol or "").strip().upper()
+    if key not in _COINBASE_FALLBACK_SYMBOLS:
+        return None
+    values: dict[str, float] = {}
+    try:
+        with httpx.Client(timeout=10) as client:
+            for currency in ("EUR", "USD"):
+                response = client.get(f"{COINBASE_PRICE_BASE}/{key}-{currency}/spot")
+                response.raise_for_status()
+                payload = response.json()
+                amount = float(((payload or {}).get("data") or {}).get("amount") or 0.0)
+                if amount <= 0:
+                    raise ValueError(f"invalid Coinbase {key}-{currency} spot price")
+                values[currency.lower()] = amount
+    except Exception as exc:
+        log.warning("failed Coinbase fallback price for %s: %s", key, exc)
+        return None
+    return {
+        "price_eur": values["eur"],
+        "price_usd": values["usd"],
+        "ts": _now(),
+        "source": "coinbase",
+    }
+
+
+def _fetch_coinbase_exchange_rates(symbols: List[str]) -> Dict[str, dict]:
+    """Fetch many symbol prices from one unauthenticated Coinbase request.
+
+    The endpoint returns units of each asset per USD, so an asset's USD price
+    is the reciprocal.  Its EUR price uses the EUR-per-USD rate from the same
+    response, keeping both currencies from one internally consistent quote.
+    """
+    normalized = list(
+        dict.fromkeys(
+            str(symbol or "").strip().upper()
+            for symbol in symbols
+            if str(symbol or "").strip()
+        )
+    )
+    if not normalized:
+        return {}
+    try:
+        with httpx.Client(timeout=12) as client:
+            response = client.get(
+                COINBASE_EXCHANGE_RATES_URL,
+                params={"currency": "USD"},
+            )
+            response.raise_for_status()
+            payload = response.json()
+        data = (payload or {}).get("data") or {}
+        if str(data.get("currency") or "").upper() != "USD":
+            raise ValueError("unexpected Coinbase exchange-rate base currency")
+        rates = data.get("rates") or {}
+        if not isinstance(rates, dict):
+            raise ValueError("invalid Coinbase exchange-rate response")
+        eur_per_usd = float(rates.get("EUR") or 0.0)
+        if eur_per_usd <= 0:
+            raise ValueError("Coinbase exchange-rate response did not contain EUR")
+
+        now = _now()
+        out: Dict[str, dict] = {}
+        for symbol in normalized:
+            units_per_usd = float(rates.get(symbol) or 0.0)
+            if units_per_usd <= 0:
+                continue
+            price_usd = 1.0 / units_per_usd
+            out[symbol] = {
+                "price_eur": price_usd * eur_per_usd,
+                "price_usd": price_usd,
+                "ts": now,
+                "source": "coinbase_exchange_rates",
+            }
+        return out
+    except Exception as exc:
+        log.warning("failed Coinbase exchange-rate fallback: %s", exc)
+        return {}
+
+
+def _fetch_solana_mint_prices(tokens: Dict[str, str]) -> Dict[str, dict]:
+    """Fetch USD prices from Jupiter for ``price_key -> mint`` entries."""
+    if not tokens:
+        return {}
+    usd_per_eur = float((_load_ecb_rates({"USD"}) or {}).get("USD", 0.0))
+    out: Dict[str, dict] = {}
+    price_keys_by_mint: Dict[str, List[str]] = {}
+    for price_key, mint in tokens.items():
+        price_keys_by_mint.setdefault(mint, []).append(price_key)
+    mints = list(price_keys_by_mint)
+    now = _now()
+    for offset in range(0, len(mints), _JUPITER_BATCH_SIZE):
+        batch = mints[offset : offset + _JUPITER_BATCH_SIZE]
+        try:
+            with httpx.Client(timeout=12) as client:
+                response = client.get(JUPITER_PRICE_URL, params={"ids": ",".join(batch)})
+                response.raise_for_status()
+                payload = response.json()
+            if not isinstance(payload, dict):
+                continue
+            for mint in batch:
+                data = payload.get(mint)
+                if not isinstance(data, dict):
+                    continue
+                usd = float(data.get("usdPrice") or 0.0)
+                if usd <= 0:
+                    continue
+                for price_key in price_keys_by_mint[mint]:
+                    out[price_key] = {
+                        "price_eur": usd / usd_per_eur if usd_per_eur > 0 else 0.0,
+                        "price_usd": usd,
+                        "ts": now,
+                        "source": "jupiter",
+                    }
+        except Exception as exc:
+            log.warning("failed Jupiter price batch: %s", exc)
+    return out
+
+
 def _load_contract_id_map(reload: bool = False) -> Dict[str, str] | None:
     """Load CoinGecko IDs keyed by ``platform:contract``.
 
@@ -335,7 +462,9 @@ def fetch_contract_token_prices(tokens: List[dict]) -> Dict[str, dict]:
 
     for token in tokens:
         chain = str(token.get("chain") or "").strip().lower()
-        contract = str(token.get("contract_address") or token.get("contract") or "").strip().lower()
+        raw_contract = str(token.get("contract_address") or token.get("contract") or "").strip()
+        # EVM addresses are case-insensitive; Solana base58 mints are not.
+        contract = raw_contract if chain == "solana" else raw_contract.lower()
         price_key = str(token.get("price_key") or "").strip()
         if not price_key and chain and contract:
             price_key = f"erc20:{chain}:{contract}"
@@ -362,9 +491,25 @@ def fetch_contract_token_prices(tokens: List[dict]) -> Dict[str, dict]:
     if not pending:
         return out
 
+    # Solana mints are already unique identities, so Jupiter can price them
+    # directly without a large CoinGecko catalogue lookup.
+    solana_pending = {
+        price_key: contract
+        for price_key, (platform, contract) in pending.items()
+        if platform == "solana"
+    }
+    solana_prices = _fetch_solana_mint_prices(solana_pending)
+    for price_key, entry in solana_prices.items():
+        out[price_key] = entry
+        _contract_price_cache[price_key] = {"ts": now, "data": entry}
+        pending.pop(price_key, None)
+
+    if not pending:
+        return out
+
     contract_ids = dict(_KNOWN_CONTRACT_IDS)
     needs_dynamic_map = any(
-        f"{platform}:{contract}" not in contract_ids
+        f"{platform}:{contract.lower()}" not in contract_ids
         for platform, contract in pending.values()
     )
     dynamic_map_failed = False
@@ -377,7 +522,7 @@ def fetch_contract_token_prices(tokens: List[dict]) -> Dict[str, dict]:
 
     price_keys_by_id: Dict[str, List[str]] = {}
     for price_key, (platform, contract) in pending.items():
-        coin_id = contract_ids.get(f"{platform}:{contract}")
+        coin_id = contract_ids.get(f"{platform}:{contract.lower()}")
         if coin_id:
             price_keys_by_id.setdefault(coin_id, []).append(price_key)
             continue
@@ -588,6 +733,24 @@ def fetch_prices(symbols: List[str]) -> Dict[str, dict]:
             out[sym] = entry
             # update cache by UPPER symbol key
             _price_cache[sym.upper()] = {"ts": now, "data": entry}
+
+    # A CoinGecko failure can happen either while resolving its coin catalogue
+    # or while requesting the final prices.  Handle both paths together so
+    # symbols without an explicit DB mapping (notably USDC) are not missed.
+    fallback_symbols = [
+        symbol
+        for symbol, entry in out.items()
+        if str(entry.get("source") or "") == "coingecko_error"
+    ]
+    if fallback_symbols:
+        coinbase_prices = _fetch_coinbase_exchange_rates(fallback_symbols)
+        for symbol in fallback_symbols:
+            key = str(symbol or "").upper()
+            fallback = coinbase_prices.get(key) or _fetch_coinbase_spot_price(key)
+            if not fallback:
+                continue
+            out[symbol] = fallback
+            _price_cache[key] = {"ts": now, "data": fallback}
 
     return out
 
