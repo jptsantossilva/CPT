@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2026.10.05]
+
+### Fixed
+- Added an independent bulk Coinbase exchange-rate fallback for supported
+  symbol assets, including BTC, SOL, USDC, and ETH, when the CoinGecko
+  catalogue or price request fails.
+- Added Jupiter mint-based pricing for Solana tokens while preserving the
+  case-sensitive Base58 mint identity.
+- Corrected snapshot unit prices so unpriced holdings sharing a symbol no
+  longer dilute valued holdings, and suppressed comparisons against legacy
+  corrupted USDC unit prices.
+- Prevented syncs with less than 10% price coverage from replacing daily
+  portfolio history and added audit detection so existing provider-failure
+  snapshots can be quarantined reversibly.
+
 ## [2026.10.02]
 
 ### Fixed
@@ -11,13 +26,6 @@ All notable changes to this project will be documented in this file.
 - Added mint-aware SPL token pricing so Solana assets use their unique contract
   identity instead of ambiguous symbols, while unknown tokens remain safely
   unpriced.
-- Added independent public price fallbacks: one bulk Coinbase exchange-rate
-  request for supported symbol assets (including BTC, SOL, USDC, and ETH), plus
-  Jupiter for Solana tokens by mint when CoinGecko is unavailable or limited.
-- Corrected snapshot unit prices so unpriced holdings sharing a symbol no longer
-  dilute valued holdings, and ignored legacy corrupted USDC comparisons.
-- Prevented severely degraded price runs from replacing daily history and added
-  audit detection so existing provider-failure snapshots can be quarantined.
 
 ## [2026.09.28]
 
