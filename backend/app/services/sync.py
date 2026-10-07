@@ -19,6 +19,7 @@ _EVM_NATIVE_SYMBOLS = {
 }
 _PRICE_FALLBACK_MAX_AGE = timedelta(hours=24)
 _TRANSIENT_PRICE_SOURCES = {"coingecko_error", "coingecko_contract_error", "ecb_error"}
+_AMBIGUOUS_PRICE_SOURCE = "coingecko_ambiguous"
 _EXCHANGE_PROVIDERS = {"binance", "okx", "kraken"}
 _MIN_PRICE_KEYS_FOR_COVERAGE_GUARD = 20
 _MIN_SNAPSHOT_PRICED_COVERAGE = 0.10
@@ -171,6 +172,7 @@ def _apply_previous_price_fallback(
                 "source": "stale_previous",
                 "provider_source": source,
                 "persisted_ts": previous_ts,
+                "price_identity": entry.get("price_identity") or price_key,
             }
             quality["reused"] += 1
         else:
@@ -790,6 +792,11 @@ def sync_all(trigger: str = "manual") -> None:
             for key in requested_price_keys
             if str((price_map.get(key) or {}).get("source") or "") in _TRANSIENT_PRICE_SOURCES
         )
+        ambiguous_price_count = sum(
+            1
+            for key in requested_price_keys
+            if str((price_map.get(key) or {}).get("source") or "") == _AMBIGUOUS_PRICE_SOURCE
+        )
         price_quality = _apply_previous_price_fallback(
             price_map,
             requested_price_keys,
@@ -811,6 +818,11 @@ def sync_all(trigger: str = "manual") -> None:
             warning_parts.append(
                 "External price requests failed; " + ", and ".join(details) + "."
             )
+        if ambiguous_price_count:
+            warning_parts.append(
+                f"Left {ambiguous_price_count} asset(s) unpriced because their ticker is ambiguous; "
+                "add an explicit CoinGecko ID in Settings > Price Mappings."
+            )
         if severely_degraded_prices:
             priced = price_quality["current"] + price_quality["reused"]
             total_price_keys = priced + price_quality["unpriced"]
@@ -827,9 +839,11 @@ def sync_all(trigger: str = "manual") -> None:
         coin_qty_by_symbol: dict[str, float] = {}
         coin_priced_qty_eur_by_symbol: dict[str, float] = {}
         coin_priced_qty_usd_by_symbol: dict[str, float] = {}
+        coin_price_identities_by_symbol: dict[str, set[str]] = {}
         for h in visible_holdings:
             sym = h["asset"]
-            p = price_map.get(str(h.get("price_key") or ""), {"price_eur": 0, "price_usd": 0})
+            price_key = str(h.get("price_key") or "")
+            p = price_map.get(price_key, {"price_eur": 0, "price_usd": 0})
             qty = float(h["qty"] or 0.0)
             value_eur = h["qty"] * float(p.get("price_eur", 0) or 0)
             value_usd = h["qty"] * float(p.get("price_usd", 0) or 0)
@@ -848,6 +862,9 @@ def sync_all(trigger: str = "manual") -> None:
                 coin_priced_qty_usd_by_symbol[sym] = (
                     float(coin_priced_qty_usd_by_symbol.get(sym) or 0.0) + qty
                 )
+            price_identity = str(p.get("price_identity") or price_key).strip()
+            if price_identity:
+                coin_price_identities_by_symbol.setdefault(sym, set()).add(price_identity)
 
         nft_totals_by_key: dict[str, dict[str, object]] = {}
         nfts_total_eur = 0.0
@@ -877,6 +894,7 @@ def sync_all(trigger: str = "manual") -> None:
 
         history_meta = {
             "sync_trigger": trigger_mode,
+            "price_identity_version": 1,
             "hidden_holdings_count": hidden_holdings_count,
             "price_quality": price_quality,
             "totals": {
@@ -905,6 +923,9 @@ def sync_all(trigger: str = "manual") -> None:
                         float(vals["usd"]) / float(coin_priced_qty_usd_by_symbol.get(sym) or 0.0)
                         if float(coin_priced_qty_usd_by_symbol.get(sym) or 0.0) > 0
                         else 0.0
+                    ),
+                    "price_identity": "|".join(
+                        sorted(coin_price_identities_by_symbol.get(sym) or set())
                     ),
                 }
                 for sym, vals in sorted(coin_totals_by_symbol.items(), key=lambda kv: kv[1]["eur"], reverse=True)

@@ -15,6 +15,7 @@ engine = create_engine(DB_URL, echo=False)
 
 DEFAULT_PRICE_SYMBOL_MAPPINGS: dict[str, dict[str, str]] = {
     "BTC": {"provider_id": "bitcoin", "label": "Bitcoin"},
+    "CVX": {"provider_id": "convex-finance", "label": "Convex Finance"},
     "ETH": {"provider_id": "ethereum", "label": "Ethereum"},
     "SOL": {"provider_id": "solana", "label": "Solana"},
     "GUN": {"provider_id": "gunz", "label": "Gunz"},
@@ -24,6 +25,7 @@ DEFAULT_PRICE_SYMBOL_MAPPINGS: dict[str, dict[str, str]] = {
     "XLM": {"provider_id": "stellar", "label": "Stellar"},
     "XRP": {"provider_id": "ripple", "label": "XRP"},
     "TRX": {"provider_id": "tron", "label": "TRON"},
+    "VELO": {"provider_id": "velo", "label": "Velo"},
 }
 
 

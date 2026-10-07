@@ -115,6 +115,56 @@ def test_fetch_prices_uses_symbol_override_for_eth(monkeypatch):
     result = prices.fetch_prices(["ETH"])
 
     assert result["ETH"]["price_usd"] == 2000.0
+    assert result["ETH"]["price_identity"] == "coingecko:ethereum"
+
+
+def test_coin_list_rejects_duplicate_symbols_instead_of_selecting_first(monkeypatch):
+    monkeypatch.setattr(
+        prices,
+        "_coin_list_cache",
+        {"ts": 0, "data": {}, "ambiguous": set()},
+    )
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=[
+                {"id": "convex-finance", "symbol": "cvx", "name": "Convex Finance"},
+                {"id": "wrong-cvx", "symbol": "cvx", "name": "Another CVX"},
+                {"id": "bitcoin", "symbol": "btc", "name": "Bitcoin"},
+            ],
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        prices.httpx,
+        "Client",
+        lambda **kwargs: real_client(transport=transport, **kwargs),
+    )
+
+    mapping = prices._load_coin_list(reload=True)
+
+    assert mapping == {"btc": "bitcoin"}
+    assert prices._coin_list_symbol_is_ambiguous("CVX") is True
+
+
+def test_fetch_prices_leaves_ambiguous_unmapped_symbol_unpriced(monkeypatch):
+    prices._price_cache.clear()
+    monkeypatch.setattr(prices, "_load_symbol_mappings", lambda reload=False: {})
+    monkeypatch.setattr(prices, "_load_coin_list", lambda reload=False: {})
+    monkeypatch.setattr(prices, "_coin_list_symbol_is_ambiguous", lambda symbol: symbol == "CVX")
+    monkeypatch.setattr(
+        prices,
+        "_fetch_simple_price",
+        lambda ids: pytest.fail(f"unexpected price lookup for {ids}"),
+    )
+
+    result = prices.fetch_prices(["CVX"])
+
+    assert result["CVX"]["price_usd"] == 0.0
+    assert result["CVX"]["source"] == "coingecko_ambiguous"
+    assert result["CVX"]["price_identity"] == "unresolved:CVX"
 
 
 def test_fetch_prices_loads_failed_coin_list_only_once(monkeypatch):
@@ -274,8 +324,10 @@ def test_fetch_prices_uses_coinbase_when_coingecko_catalogue_fails(monkeypatch):
     assert result["USDC"]["source"] == "coinbase_exchange_rates"
 
 
-def test_default_price_mapping_includes_sol():
+def test_default_price_mappings_include_canonical_collision_prone_assets():
     assert db.DEFAULT_PRICE_SYMBOL_MAPPINGS["SOL"]["provider_id"] == "solana"
+    assert db.DEFAULT_PRICE_SYMBOL_MAPPINGS["CVX"]["provider_id"] == "convex-finance"
+    assert db.DEFAULT_PRICE_SYMBOL_MAPPINGS["VELO"]["provider_id"] == "velo"
 
 
 def test_price_quality_guard_rejects_only_severely_degraded_large_syncs():

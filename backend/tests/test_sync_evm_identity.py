@@ -14,7 +14,12 @@ def test_previous_price_fallback_is_exact_key_error_only_and_24_hours():
     stale_key = "symbol:ETH"
     missing_key = "symbol:OTHER"
     prices = {
-        fresh_key: {"price_eur": 0.0, "price_usd": 0.0, "source": "coingecko_contract_error"},
+        fresh_key: {
+            "price_eur": 0.0,
+            "price_usd": 0.0,
+            "source": "coingecko_contract_error",
+            "price_identity": fresh_key,
+        },
         stale_key: {"price_eur": 0.0, "price_usd": 0.0, "source": "coingecko_error"},
         missing_key: {"price_eur": 0.0, "price_usd": 0.0, "source": "coingecko_missing"},
     }
@@ -33,6 +38,7 @@ def test_previous_price_fallback_is_exact_key_error_only_and_24_hours():
 
     assert prices[fresh_key]["source"] == "stale_previous"
     assert prices[fresh_key]["persisted_ts"] == previous[fresh_key].ts
+    assert prices[fresh_key]["price_identity"] == fresh_key
     assert prices[stale_key]["price_usd"] == 0.0
     assert prices[missing_key]["price_usd"] == 0.0
     assert quality == {"current": 0, "reused": 1, "unpriced": 2}
@@ -127,8 +133,10 @@ def test_sync_excludes_hidden_erc20_spoof_from_prices_and_snapshot(monkeypatch, 
             "priced_qty_usd": 0.5,
             "unit_eur": 1800.0,
             "unit_usd": 2000.0,
+            "price_identity": "symbol:ETH",
         }
     ]
+    assert meta["price_identity_version"] == 1
 
 
 def test_snapshot_unit_price_excludes_unpriced_same_symbol_quantity(monkeypatch, tmp_path):

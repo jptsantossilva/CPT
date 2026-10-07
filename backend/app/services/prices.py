@@ -45,8 +45,10 @@ _FIAT_SYMBOLS = {
 _ecb_rate_cache: Dict[str, int | dict] = {"ts": 0, "data": {}}
 _ECB_RATE_TTL = 24 * 3600
 
-# Cache for coin list (symbol -> coin id)
-_coin_list_cache: Dict[str, int | dict] = {"ts": 0, "data": {}}
+# Cache for coin list (unique symbol -> coin id). Symbols shared by multiple
+# CoinGecko assets are kept separately and must be resolved with an explicit
+# DB-managed mapping; selecting the first catalogue row is not deterministic.
+_coin_list_cache: dict = {"ts": 0, "data": {}, "ambiguous": set()}
 _COIN_LIST_TTL = 24 * 3600
 
 # Cache for DB-managed symbol mappings (symbol -> CoinGecko id)
@@ -133,7 +135,7 @@ def _wait_for_rate_limit() -> None:
 
 
 def _load_coin_list(reload: bool = False) -> Dict[str, str] | None:
-    """Load coin list from CoinGecko and cache mapping symbol -> id."""
+    """Load only unambiguous symbol-to-ID mappings from CoinGecko."""
     if (
         not reload
         and _now() - _coin_list_cache["ts"] < _COIN_LIST_TTL
@@ -157,17 +159,36 @@ def _load_coin_list(reload: bool = False) -> Dict[str, str] | None:
         cached = _coin_list_cache["data"]
         return cached if cached else None
 
-    mapping: Dict[str, str] = {}
-    for c in coins:
-        # coin fields: id, symbol, name
-        sym = c.get("symbol", "").lower()
-        # keep the first occurrence for a symbol
-        if sym and sym not in mapping:
-            mapping[sym] = c.get("id")
+    ids_by_symbol: dict[str, set[str]] = {}
+    for c in coins if isinstance(coins, list) else []:
+        # CoinGecko symbols are not unique. A symbol is safe for automatic
+        # resolution only when the catalogue contains exactly one distinct ID.
+        sym = str(c.get("symbol") or "").strip().lower()
+        coin_id = str(c.get("id") or "").strip()
+        if sym and coin_id:
+            ids_by_symbol.setdefault(sym, set()).add(coin_id)
+
+    mapping: Dict[str, str] = {
+        sym: next(iter(ids))
+        for sym, ids in ids_by_symbol.items()
+        if len(ids) == 1
+    }
+    ambiguous = {sym for sym, ids in ids_by_symbol.items() if len(ids) > 1}
 
     _coin_list_cache["ts"] = _now()
     _coin_list_cache["data"] = mapping
+    _coin_list_cache["ambiguous"] = ambiguous
+    if ambiguous:
+        log.info(
+            "CoinGecko catalogue contains %s ambiguous symbols; explicit mappings are required",
+            len(ambiguous),
+        )
     return mapping
+
+
+def _coin_list_symbol_is_ambiguous(symbol: str) -> bool:
+    ambiguous = _coin_list_cache.get("ambiguous") or set()
+    return str(symbol or "").strip().lower() in ambiguous
 
 
 def clear_symbol_mapping_cache(symbol: str | None = None) -> None:
@@ -379,6 +400,7 @@ def _fetch_solana_mint_prices(tokens: Dict[str, str]) -> Dict[str, dict]:
                         "price_usd": usd,
                         "ts": now,
                         "source": "jupiter",
+                        "price_identity": f"contract:solana:{mint}",
                     }
         except Exception as exc:
             log.warning("failed Jupiter price batch: %s", exc)
@@ -482,6 +504,7 @@ def fetch_contract_token_prices(tokens: List[dict]) -> Dict[str, dict]:
                 "price_usd": 0.0,
                 "ts": now,
                 "source": "unsupported_contract_chain",
+                "price_identity": price_key,
             }
             out[price_key] = entry
             _contract_price_cache[price_key] = {"ts": now, "data": entry}
@@ -535,6 +558,7 @@ def fetch_contract_token_prices(tokens: List[dict]) -> Dict[str, dict]:
                 if dynamic_map_failed
                 else "coingecko_contract_missing"
             ),
+            "price_identity": price_key,
         }
         out[price_key] = entry
         _contract_price_cache[price_key] = {"ts": now, "data": entry}
@@ -551,6 +575,7 @@ def fetch_contract_token_prices(tokens: List[dict]) -> Dict[str, dict]:
                         "price_usd": float(data.get("usd", 0.0) or 0.0),
                         "ts": now,
                         "source": "coingecko_contract",
+                        "price_identity": price_key,
                     }
                 else:
                     entry = {
@@ -558,6 +583,7 @@ def fetch_contract_token_prices(tokens: List[dict]) -> Dict[str, dict]:
                         "price_usd": 0.0,
                         "ts": now,
                         "source": "coingecko_contract_error" if provider_failed else "coingecko_contract_missing",
+                        "price_identity": price_key,
                     }
                 out[price_key] = entry
                 _contract_price_cache[price_key] = {"ts": now, "data": entry}
@@ -670,6 +696,7 @@ def fetch_prices(symbols: List[str]) -> Dict[str, dict]:
                     "price_usd": usd_rate / rate,
                     "ts": now,
                     "source": "ecb",
+                    "price_identity": f"fiat:{symbol}",
                 }
                 _price_cache[symbol] = {"ts": now, "data": out[s]}
             else:
@@ -678,6 +705,7 @@ def fetch_prices(symbols: List[str]) -> Dict[str, dict]:
                     "price_usd": 0.0,
                     "ts": now,
                     "source": "ecb_error",
+                    "price_identity": f"fiat:{symbol}",
                 }
             continue
         cached = _price_cache.get(s.upper())
@@ -700,11 +728,17 @@ def fetch_prices(symbols: List[str]) -> Dict[str, dict]:
             to_query_ids.append(cid)
         else:
             # no mapping found; return 0 prices for now
+            ambiguous = not lookup_failed and _coin_list_symbol_is_ambiguous(symbol)
             out[s] = {
                 "price_eur": 0.0,
                 "price_usd": 0.0,
                 "ts": now,
-                "source": "coingecko_error" if lookup_failed else "none",
+                "source": (
+                    "coingecko_error"
+                    if lookup_failed
+                    else ("coingecko_ambiguous" if ambiguous else "none")
+                ),
+                "price_identity": f"unresolved:{symbol}",
             }
 
     # Query CoinGecko for ids (deduplicate ids)
@@ -721,6 +755,7 @@ def fetch_prices(symbols: List[str]) -> Dict[str, dict]:
                     "price_usd": float(data.get("usd", 0.0)),
                     "ts": now,
                     "source": "coingecko",
+                    "price_identity": f"coingecko:{cid}",
                 }
             else:
                 entry = {
@@ -728,6 +763,7 @@ def fetch_prices(symbols: List[str]) -> Dict[str, dict]:
                     "price_usd": 0.0,
                     "ts": now,
                     "source": "coingecko_error" if provider_failed else "coingecko_missing",
+                    "price_identity": f"coingecko:{cid}",
                 }
 
             out[sym] = entry
@@ -746,11 +782,16 @@ def fetch_prices(symbols: List[str]) -> Dict[str, dict]:
         coinbase_prices = _fetch_coinbase_exchange_rates(fallback_symbols)
         for symbol in fallback_symbols:
             key = str(symbol or "").upper()
+            failed_entry = out.get(symbol) or {}
             fallback = coinbase_prices.get(key) or _fetch_coinbase_spot_price(key)
             if not fallback:
                 continue
-            out[symbol] = fallback
-            _price_cache[key] = {"ts": now, "data": fallback}
+            fallback_entry = dict(fallback)
+            fallback_entry["price_identity"] = str(
+                failed_entry.get("price_identity") or f"symbol:{key}"
+            )
+            out[symbol] = fallback_entry
+            _price_cache[key] = {"ts": now, "data": fallback_entry}
 
     return out
 

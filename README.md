@@ -87,6 +87,19 @@ exchange sync fails, successful sources are updated but no history snapshot is
 written for that cycle; if every configured exchange source fails, previous
 holdings are preserved.
 
+### Price identity and ticker collisions
+
+Coin tickers are not unique. CPT uses explicit CoinGecko IDs for known
+collision-prone assets and only auto-resolves a ticker when the CoinGecko
+catalogue contains exactly one matching asset. An ambiguous ticker is left
+unpriced rather than assigned an arbitrary value; the sync status then directs
+the administrator to **Settings → Price Mappings**, where the intended
+CoinGecko API ID can be configured.
+
+Portfolio snapshots retain the resolved price identity. Notifications do not
+calculate total or per-coin changes across snapshots whose price identities are
+incompatible, so a corrected mapping is not presented as a market gain or loss.
+
 ### 2) Start services
 
 ```bash

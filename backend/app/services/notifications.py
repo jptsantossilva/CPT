@@ -33,6 +33,7 @@ _ALLOWED_DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturd
 _CURRENCY_SETTING_KEY = "ui_currency_mode"
 _ALLOWED_CURRENCIES = {"EUR", "USD"}
 _MIN_MOVER_VALUE_USD = 10.0
+_PRICE_IDENTITY_COMPARISON_NOTE = "price identity changed; comparison skipped"
 
 _lock = threading.Lock()
 _thread: threading.Thread | None = None
@@ -308,6 +309,7 @@ def _extract_sync_snapshot_data(snapshot: Snapshot | None) -> tuple[dict[str, fl
             "unit_usd": unit_usd,
             "priced_qty_eur": _safe_float(row.get("priced_qty_eur")),
             "priced_qty_usd": _safe_float(row.get("priced_qty_usd")),
+            "price_identity": str(row.get("price_identity") or "").strip(),
         }
 
     for row in meta.get("nfts") or []:
@@ -464,6 +466,18 @@ def _compute_unit_price_movers(
         base = base_assets.get(key)
         if not base:
             continue
+        if str(current.get("asset_type") or "") == "coin":
+            current_identity = str(current.get("price_identity") or "").strip()
+            base_identity = str(base.get("price_identity") or "").strip()
+            # Never calculate a price move across different provider IDs (or
+            # across the legacy boundary where only one snapshot records the
+            # identity). This prevents ticker collisions from becoming PnL.
+            if (current_identity or base_identity) and (
+                not current_identity
+                or not base_identity
+                or current_identity != base_identity
+            ):
+                continue
         current_usd = float(current.get("value_usd") or 0.0)
         base_usd = float(base.get("value_usd") or 0.0)
         if current_usd <= _MIN_MOVER_VALUE_USD or base_usd <= _MIN_MOVER_VALUE_USD:
@@ -514,6 +528,39 @@ def _compute_unit_price_movers(
     return top_up[:5], top_down[:5]
 
 
+def _price_comparison_issue(
+    current_snapshot: Snapshot | None,
+    base_snapshot: Snapshot | None,
+    current_assets: dict[str, dict[str, Any]],
+    base_assets: dict[str, dict[str, Any]],
+) -> str | None:
+    """Return a reason when two snapshots use incompatible price identities."""
+    if current_snapshot is None or base_snapshot is None:
+        return None
+
+    current_version = int(_safe_float(_snapshot_meta(current_snapshot).get("price_identity_version")))
+    base_version = int(_safe_float(_snapshot_meta(base_snapshot).get("price_identity_version")))
+    if current_version != base_version:
+        return _PRICE_IDENTITY_COMPARISON_NOTE
+
+    for key, current in current_assets.items():
+        if str(current.get("asset_type") or "") != "coin":
+            continue
+        base = base_assets.get(key)
+        if not base:
+            continue
+        if max(
+            float(current.get("value_usd") or 0.0),
+            float(base.get("value_usd") or 0.0),
+        ) <= _MIN_MOVER_VALUE_USD:
+            continue
+        current_identity = str(current.get("price_identity") or "").strip()
+        base_identity = str(base.get("price_identity") or "").strip()
+        if (current_identity or base_identity) and current_identity != base_identity:
+            return _PRICE_IDENTITY_COMPARISON_NOTE
+    return None
+
+
 def _render_message(
     *,
     currency: str,
@@ -526,6 +573,7 @@ def _render_message(
     global_pnl: float | None = None,
     global_pnl_pct: float | None = None,
     global_pnl_status: str = "unavailable",
+    comparison_note: str | None = None,
 ) -> tuple[str, str, str]:
     curr = "USD" if str(currency or "").upper() == "USD" else "EUR"
     curr_symbol = "$" if curr == "USD" else "€"
@@ -552,7 +600,7 @@ def _render_message(
             else (
                 f"{'+' if delta_abs >= 0 else '-'}{curr_symbol}{abs(delta_abs):,.2f} (n/a)"
                 if delta_abs is not None
-                else "n/a (need at least 2 sync snapshots)"
+                else f"n/a ({comparison_note or 'need at least 2 sync snapshots'})"
             )
         ),
         f"{previous_sync_short} -> {current_sync_short} · {sync_gap}",
@@ -598,7 +646,7 @@ def _render_message(
         )
 
     if delta_abs is None:
-        variation_html = "Change: n/a (need at least 2 sync snapshots)"
+        variation_html = f"Change: n/a ({escape(comparison_note or 'need at least 2 sync snapshots')})"
     elif delta_pct is None:
         variation_html = f"Change: {_fmt_colored_amount(delta_abs)} <span style=\"opacity:.72;\">(n/a)</span>"
     else:
@@ -625,6 +673,12 @@ def _render_message(
     )
     change_pct_html = (
         _fmt_colored_pct(delta_pct) if delta_pct is not None else "<span style=\"opacity:.72;\">n/a</span>"
+    )
+    comparison_note_html = (
+        f"<p style=\"margin:0 0 10px 0;color:#92400e;font-size:12px;\">"
+        f"{escape(comparison_note)}</p>"
+        if comparison_note
+        else ""
     )
     trend_arrow = "▲" if (delta_abs is not None and delta_abs >= 0) else ("▼" if delta_abs is not None else "•")
     trend_color = "#15803d" if (delta_abs is not None and delta_abs >= 0) else ("#b91c1c" if delta_abs is not None else "#666")
@@ -667,6 +721,7 @@ def _render_message(
         "</table>"
         f"<p style=\"margin:0 0 14px 0;color:#666;font-size:12px;\">{escape(previous_sync_short)} -&gt; {escape(current_sync_short)} "
         f"&middot; {escape(sync_gap)}</p>"
+        f"{comparison_note_html}"
         "<p style=\"margin:0 0 14px 0;font-size:15px;\"><strong>Global PnL:</strong> "
         f"{pnl_display_html}</p>"
         "<p style=\"margin:0 0 6px 0;font-size:15px;\"><strong>Top 5 up</strong></p>"
@@ -904,12 +959,18 @@ def execute_notification(notification_id: int, reason: str = "scheduled") -> dic
     global_pnl, global_pnl_pct, global_pnl_status = _global_pnl_for_snapshot(current_sync_snapshot, selected_currency)
     current_totals, current_assets = _extract_sync_snapshot_data(current_sync_snapshot)
     previous_totals, previous_assets = _extract_sync_snapshot_data(previous_sync_snapshot)
+    comparison_note = _price_comparison_issue(
+        current_sync_snapshot,
+        previous_sync_snapshot,
+        current_assets,
+        previous_assets,
+    )
     current_total = float(
         current_totals["portfolio_usd"] if selected_currency == "USD" else current_totals["portfolio_eur"]
     )
     base_total = (
         float(previous_totals["portfolio_usd"] if selected_currency == "USD" else previous_totals["portfolio_eur"])
-        if previous_sync_snapshot
+        if previous_sync_snapshot and comparison_note is None
         else None
     )
     top_up, top_down = _compute_unit_price_movers(
@@ -926,6 +987,7 @@ def execute_notification(notification_id: int, reason: str = "scheduled") -> dic
         global_pnl=global_pnl,
         global_pnl_pct=global_pnl_pct,
         global_pnl_status=global_pnl_status,
+        comparison_note=comparison_note,
     )
 
     snapshot_id = _store_snapshot(
@@ -952,6 +1014,7 @@ def execute_notification(notification_id: int, reason: str = "scheduled") -> dic
             "global_pnl": global_pnl,
             "global_pnl_pct": global_pnl_pct,
             "global_pnl_status": global_pnl_status,
+            "comparison_note": comparison_note,
         },
         "sync_snapshots": {
             "current_sync_snapshot_id": int(current_sync_snapshot.id) if current_sync_snapshot and current_sync_snapshot.id is not None else None,
@@ -1204,12 +1267,18 @@ def preview(notification_id: int) -> dict[str, Any]:
     global_pnl, global_pnl_pct, global_pnl_status = _global_pnl_for_snapshot(current_sync_snapshot, selected_currency)
     current_totals, current_assets = _extract_sync_snapshot_data(current_sync_snapshot)
     previous_totals, previous_assets = _extract_sync_snapshot_data(previous_sync_snapshot)
+    comparison_note = _price_comparison_issue(
+        current_sync_snapshot,
+        previous_sync_snapshot,
+        current_assets,
+        previous_assets,
+    )
     current_total = float(
         current_totals["portfolio_usd"] if selected_currency == "USD" else current_totals["portfolio_eur"]
     )
     base_total = (
         float(previous_totals["portfolio_usd"] if selected_currency == "USD" else previous_totals["portfolio_eur"])
-        if previous_sync_snapshot
+        if previous_sync_snapshot and comparison_note is None
         else None
     )
     top_up, top_down = _compute_unit_price_movers(
@@ -1226,6 +1295,7 @@ def preview(notification_id: int) -> dict[str, Any]:
         global_pnl=global_pnl,
         global_pnl_pct=global_pnl_pct,
         global_pnl_status=global_pnl_status,
+        comparison_note=comparison_note,
     )
     return {
         "notification_id": notification_id,
@@ -1241,6 +1311,7 @@ def preview(notification_id: int) -> dict[str, Any]:
         "global_pnl": global_pnl,
         "global_pnl_pct": global_pnl_pct,
         "global_pnl_status": global_pnl_status,
+        "comparison_note": comparison_note,
         "current_sync_snapshot_id": int(current_sync_snapshot.id) if current_sync_snapshot and current_sync_snapshot.id is not None else None,
         "previous_sync_snapshot_id": int(previous_sync_snapshot.id) if previous_sync_snapshot and previous_sync_snapshot.id is not None else None,
         "top_up": top_up,

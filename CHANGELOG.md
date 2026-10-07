@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2026.10.07]
+
+### Fixed
+- Pinned CVX and VELO to their canonical CoinGecko IDs so similarly named
+  assets cannot replace Convex Finance or Velo valuations.
+- Stopped selecting the first CoinGecko catalogue result for duplicate symbols;
+  ambiguous assets now remain unpriced with an actionable sync warning until an
+  explicit mapping is configured.
+- Added price identities to portfolio snapshots and skipped notification
+  comparisons across identity changes, preventing provider remaps from being
+  reported as genuine portfolio or 24-hour market moves.
+
 ## [2026.10.05]
 
 ### Fixed

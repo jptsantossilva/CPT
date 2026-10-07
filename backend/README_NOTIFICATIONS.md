@@ -95,8 +95,10 @@ Base path: `/admin/notifications`
 - `custom`: uses values stored in the notification config
 3. If due:
 - Build current portfolio snapshot from assets + NFTs
-- Load `notificationanchor` base snapshot (if any)
-- Compute total variation vs last successful notification
+- Load the latest and previous valid sync snapshots
+- Verify that their persisted price identities are comparable
+- Compute total variation between those sync snapshots; show `n/a` when a
+  mapping/identity boundary makes the totals unsafe to compare
 - Compute top 5 positive and top 5 negative movers by percentage (coins + NFTs)
 - Render message
 - Dispatch to all enabled recipients for that config

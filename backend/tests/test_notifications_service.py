@@ -66,6 +66,22 @@ def test_render_message_includes_global_pnl_in_plain_and_html_email():
     assert "-12.55%" in body_html
 
 
+def test_render_message_explains_skipped_price_identity_comparison():
+    _subject, body, body_html = notifications._render_message(
+        currency="USD",
+        current_total=80_000.0,
+        base_total=None,
+        current_sync_ts=datetime(2026, 10, 7, 0, 0, tzinfo=timezone.utc),
+        previous_sync_ts=datetime(2026, 10, 6, 0, 1, tzinfo=timezone.utc),
+        top_up=[],
+        top_down=[],
+        comparison_note="price identity changed; comparison skipped",
+    )
+
+    assert "n/a (price identity changed; comparison skipped)" in body
+    assert "price identity changed; comparison skipped" in body_html
+
+
 def test_global_pnl_for_notification_uses_the_notification_snapshot(monkeypatch):
     cashflow = SimpleNamespace(
         flow_type="deposit",
@@ -204,6 +220,77 @@ def test_unit_price_movers_compare_corrected_usdc_prices():
     assert top_up == []
     assert len(top_down) == 1
     assert top_down[0]["delta_pct"] == pytest.approx(-0.05)
+
+
+def test_unit_price_movers_skip_changed_coin_identity():
+    current = {
+        "coin:CVX": {
+            "asset_type": "coin",
+            "asset_label": "CVX",
+            "value_usd": 360.0,
+            "unit_usd": 2.12,
+            "price_identity": "coingecko:convex-finance",
+        }
+    }
+    base = {
+        "coin:CVX": {
+            "asset_type": "coin",
+            "asset_label": "CVX",
+            "value_usd": 35_000.0,
+            "unit_usd": 206.14,
+            "price_identity": "coingecko:wrong-cvx",
+        }
+    }
+
+    top_up, top_down = notifications._compute_unit_price_movers(current, base, "USD")
+
+    assert top_up == []
+    assert top_down == []
+
+
+def test_price_comparison_rejects_legacy_boundary_and_identity_change():
+    current_snapshot = Snapshot(
+        total_eur=320.0,
+        total_usd=360.0,
+        meta='{"price_identity_version":1}',
+    )
+    legacy_snapshot = Snapshot(total_eur=31_000.0, total_usd=35_000.0, meta="{}")
+    current_assets = {
+        "coin:CVX": {
+            "asset_type": "coin",
+            "value_usd": 360.0,
+            "price_identity": "coingecko:convex-finance",
+        }
+    }
+    legacy_assets = {
+        "coin:CVX": {"asset_type": "coin", "value_usd": 35_000.0}
+    }
+
+    assert notifications._price_comparison_issue(
+        current_snapshot,
+        legacy_snapshot,
+        current_assets,
+        legacy_assets,
+    ) == "price identity changed; comparison skipped"
+
+    previous_snapshot = Snapshot(
+        total_eur=31_000.0,
+        total_usd=35_000.0,
+        meta='{"price_identity_version":1}',
+    )
+    changed_assets = {
+        "coin:CVX": {
+            "asset_type": "coin",
+            "value_usd": 35_000.0,
+            "price_identity": "coingecko:wrong-cvx",
+        }
+    }
+    assert notifications._price_comparison_issue(
+        current_snapshot,
+        previous_snapshot,
+        current_assets,
+        changed_assets,
+    ) == "price identity changed; comparison skipped"
 
 
 def test_should_run_now_inherit_requires_new_sync_snapshot(monkeypatch):
