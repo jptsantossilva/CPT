@@ -74,6 +74,7 @@ export type NotificationConfig = {
   id: number
   name: string
   channel: NotificationChannel
+  currency: 'EUR' | 'USD'
   enabled: boolean
   schedule_mode: ScheduleMode
   interval_value: number
@@ -153,6 +154,19 @@ export type CounterpartyPerformance = {
   usd: CurrencyPerformance
 }
 
+export type CounterpartyAllocation = {
+  counterparty_type: 'person' | 'unassigned'
+  counterparty_name: string
+  allocation_pct: string | null
+  eur: CurrencyPerformance
+  usd: CurrencyPerformance
+  pending: {
+    count: number
+    eur: CurrencyPerformance
+    usd: CurrencyPerformance
+  }
+}
+
 export type PortfolioPerformance = {
   snapshot: { id?: number | null; timestamp: string } | null
   eur: CurrencyPerformance
@@ -163,6 +177,7 @@ export type PortfolioPerformance = {
     usd: CurrencyPerformance
   }
   by_counterparty: CounterpartyPerformance[]
+  allocations: CounterpartyAllocation[]
 }
 
 async function parseResponse<T>(response: Response): Promise<T> {

@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -17,6 +17,7 @@ class NotificationRecipientIn(BaseModel):
 class NotificationCreate(BaseModel):
     name: str
     channel: str
+    currency: Literal["EUR", "USD"] = "EUR"
     enabled: bool = True
     schedule_mode: str = "inherit"
     interval_value: int = 1
@@ -29,6 +30,7 @@ class NotificationCreate(BaseModel):
 class NotificationUpdate(BaseModel):
     name: str | None = None
     channel: str | None = None
+    currency: Literal["EUR", "USD"] | None = None
     enabled: bool | None = None
     schedule_mode: str | None = None
     interval_value: int | None = None

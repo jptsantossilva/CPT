@@ -36,6 +36,7 @@ def init_db():
     _ensure_price_identity_columns()
     _ensure_snapshot_validity_columns()
     _ensure_nft_holding_columns()
+    _ensure_notification_config_columns()
     _ensure_notification_anchor_columns()
     seed_default_price_symbol_mappings()
 
@@ -188,6 +189,21 @@ def _ensure_notification_anchor_columns() -> None:
             conn.execute(text("ALTER TABLE notificationanchor ADD COLUMN last_sync_snapshot_id INTEGER"))
     except Exception:
         return
+
+
+def _ensure_notification_config_columns() -> None:
+    """Add per-notification settings to databases created by older versions."""
+    try:
+        insp = inspect(engine)
+        if "notificationconfig" not in insp.get_table_names():
+            return
+        existing = {str(c.get("name")) for c in insp.get_columns("notificationconfig")}
+        if "currency" in existing:
+            return
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE notificationconfig ADD COLUMN currency VARCHAR NOT NULL DEFAULT 'EUR'"))
+    except Exception:
+        log.exception("failed to add notification config currency column")
 
 
 def get_session():

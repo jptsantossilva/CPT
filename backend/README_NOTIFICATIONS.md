@@ -5,7 +5,8 @@ This feature adds configurable portfolio notifications with:
 - one or more recipients per config
 - channel per config (`email` or `telegram`)
 - schedule per config (`inherit` from Automatic Sync Schedule, or custom)
-- message content with total portfolio, variation vs last sent, top 5 up and top 5 down movers (coins + NFTs)
+- message content with total portfolio, global and per-counterparty PnL,
+  variation vs last sent, and top 5 up/down movers (coins + NFTs)
 
 ## SQL Schema (logical)
 
@@ -14,6 +15,7 @@ CREATE TABLE notificationconfig (
   id INTEGER PRIMARY KEY,
   name TEXT NOT NULL,
   channel TEXT NOT NULL,                 -- email|telegram
+  currency TEXT NOT NULL DEFAULT 'EUR',  -- EUR|USD message currency
   enabled BOOLEAN NOT NULL DEFAULT 1,
   schedule_mode TEXT NOT NULL DEFAULT 'inherit', -- inherit|custom
   interval_value INTEGER NOT NULL DEFAULT 1,
@@ -101,6 +103,10 @@ Base path: `/admin/notifications`
   mapping/identity boundary makes the totals unsafe to compare
 - Compute top 5 positive and top 5 negative movers by percentage (coins + NFTs)
 - Render message
+- Use the notification's saved EUR/USD currency independently of the global UI
+  display currency
+- Include the proportional counterparty allocation calculated from positive
+  net EUR capital, aggregating non-person movements as `Unassigned`
 - Dispatch to all enabled recipients for that config
 - Persist run in `notificationrun`
 - Persist snapshot in `notificationsnapshot` + `notificationassetsnapshot`
@@ -111,6 +117,10 @@ Base path: `/admin/notifications`
 ```text
 Portfolio total: 125,430.00 EUR (135,901.00 USD)
 Variation vs last notification: +2.14% (+2,626.00 EUR)
+
+Performance by Counterparty:
+- Rita: Net €59,000.00 · Share 80.74% · Current €... · PnL ... (...%)
+- João: Net €14,075.00 · Share 19.26% · Current €... · PnL ... (...%)
 
 Top 5 up:
 1. BTC +4.20%

@@ -2,7 +2,11 @@ from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import inspect, text
+from sqlalchemy.pool import StaticPool
+from sqlmodel import create_engine
 
+from backend.app import db
 from backend.app.models import NotificationAnchor, NotificationConfig, Snapshot
 from backend.app.services import notifications
 
@@ -66,6 +70,57 @@ def test_render_message_includes_global_pnl_in_plain_and_html_email():
     assert "-12.55%" in body_html
 
 
+def test_render_message_includes_counterparty_performance_and_pending_note():
+    allocations = [
+        {
+            "counterparty_type": "person",
+            "counterparty_name": "Rita",
+            "allocation_pct": "80.74",
+            "net_invested": "71372.00",
+            "current_portfolio": "59264.68",
+            "pnl": "-12107.32",
+            "pnl_pct": "-16.96",
+            "status": "loss",
+            "pending_count": 1,
+        },
+        {
+            "counterparty_type": "person",
+            "counterparty_name": "João",
+            "allocation_pct": "19.26",
+            "net_invested": "16602.00",
+            "current_portfolio": "14138.14",
+            "pnl": "-2463.86",
+            "pnl_pct": "-14.84",
+            "status": "loss",
+            "pending_count": 0,
+        },
+    ]
+
+    _subject, body, body_html = notifications._render_message(
+        currency="USD",
+        current_total=73402.82,
+        base_total=74000.0,
+        current_sync_ts=datetime(2026, 10, 14, 0, 0, tzinfo=timezone.utc),
+        previous_sync_ts=datetime(2026, 10, 13, 0, 0, tzinfo=timezone.utc),
+        top_up=[],
+        top_down=[],
+        global_pnl=-14571.18,
+        global_pnl_pct=-16.56,
+        global_pnl_status="loss",
+        counterparty_allocations=allocations,
+        pending_cashflow_count=1,
+    )
+
+    assert "Performance by Counterparty" in body
+    assert "Rita: Net $71,372.00 · Share 80.74% · Current $59,264.68" in body
+    assert "PnL -$12,107.32 (-16.96%) · 1 pending" in body
+    assert "Pending cash flows excluded: 1" in body
+    assert "Performance by Counterparty" in body_html
+    assert "Rita" in body_html
+    assert "$59,264.68" in body_html
+    assert "-$12,107.32" in body_html
+
+
 def test_render_message_explains_skipped_price_identity_comparison():
     _subject, body, body_html = notifications._render_message(
         currency="USD",
@@ -117,6 +172,84 @@ def test_global_pnl_for_notification_uses_the_notification_snapshot(monkeypatch)
     assert pnl == 220.0
     assert pnl_pct == 20.0
     assert status == "gain"
+
+
+def test_notification_currency_validation_and_legacy_fallback():
+    assert notifications._normalize_config_currency("usd") == "USD"
+    assert notifications._config_currency(SimpleNamespace(currency=None)) == "EUR"
+    assert notifications._config_currency(SimpleNamespace(currency="invalid")) == "EUR"
+    with pytest.raises(ValueError, match="currency must be one of"):
+        notifications._normalize_config_currency("GBP")
+
+
+def test_notification_currency_compatibility_migration_defaults_existing_rows(monkeypatch):
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE notificationconfig (id INTEGER PRIMARY KEY, name VARCHAR NOT NULL)"))
+        conn.execute(text("INSERT INTO notificationconfig (id, name) VALUES (1, 'Legacy')"))
+    monkeypatch.setattr(db, "engine", engine)
+
+    db._ensure_notification_config_columns()
+
+    assert "currency" in {column["name"] for column in inspect(engine).get_columns("notificationconfig")}
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT currency FROM notificationconfig WHERE id = 1")).scalar_one() == "EUR"
+
+
+def test_preview_uses_notification_currency_instead_of_global_ui_currency(monkeypatch):
+    now = datetime(2026, 10, 15, 10, 0, tzinfo=timezone.utc)
+    cfg = NotificationConfig(
+        id=9,
+        name="EUR report",
+        channel="email",
+        currency="EUR",
+        created_at=now,
+        updated_at=now,
+    )
+
+    class _DummySession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, model, key):
+            return cfg if model is NotificationConfig and key == 9 else None
+
+    current = SimpleNamespace(id=21, timestamp=now)
+    performance = {
+        "eur": {"pnl": "20.00", "pnl_pct": "20.00", "status": "gain"},
+        "usd": {"pnl": "999.00", "pnl_pct": "999.00", "status": "gain"},
+        "allocations": [],
+        "pending": {"count": 0},
+    }
+    totals = {
+        "coins_eur": 100.0,
+        "coins_usd": 999.0,
+        "nfts_eur": 0.0,
+        "nfts_usd": 0.0,
+        "portfolio_eur": 100.0,
+        "portfolio_usd": 999.0,
+    }
+    monkeypatch.setattr(notifications.db, "get_session", lambda: _DummySession())
+    monkeypatch.setattr(notifications, "get_notification_currency", lambda: "USD")
+    monkeypatch.setattr(notifications, "_load_latest_sync_pair", lambda: (current, None))
+    monkeypatch.setattr(notifications, "_performance_for_snapshot", lambda _snapshot: performance)
+    monkeypatch.setattr(notifications, "_extract_sync_snapshot_data", lambda _snapshot: (totals, {}))
+    monkeypatch.setattr(notifications, "_price_comparison_issue", lambda *args: None)
+    monkeypatch.setattr(notifications, "_compute_unit_price_movers", lambda *args, **kwargs: ([], []))
+
+    result = notifications.preview(9)
+
+    assert result["currency"] == "EUR"
+    assert result["current_total"] == 100.0
+    assert "€100.00" in result["body"]
+    assert "$999.00" not in result["body"]
 
 
 def test_compute_next_run_minutes_and_weekly():

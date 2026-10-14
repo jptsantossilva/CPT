@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2026.10.15]
+
+### Added
+- Added an independent EUR/USD currency setting to every portfolio
+  notification. Preview, manual, and scheduled messages now use the saved
+  notification currency instead of the application's current display currency.
+- Added a startup compatibility migration that defaults existing notification
+  configurations to EUR.
+
+## [2026.10.14]
+
+### Added
+- Added proportional per-counterparty portfolio value and PnL based on positive
+  net EUR capital, with stable shares across EUR/USD and an `Unassigned` bucket
+  for bank and other non-person cash flows.
+- Added counterparty performance tables to Dashboard, Investments, and email,
+  Telegram, and preview notification content.
+- Extended portfolio performance and notification payloads with reconciled
+  counterparty allocations and pending cash-flow details.
+
 ## [2026.10.07]
 
 ### Fixed

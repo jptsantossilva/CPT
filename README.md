@@ -201,8 +201,23 @@ The percentage is unavailable if net invested capital is zero or negative,
 because it would not represent a meaningful return percentage.
 
 Cash flows dated after the latest snapshot are shown as pending and excluded
-from PnL until another sync is completed. Banks and people are cash-flow
-labels only; the app does not allocate portfolio ownership or PnL to them.
+from PnL until another sync is completed. The app also attributes current value
+and PnL to people using their share of positive net EUR capital. The same EUR
+share is used for EUR and USD reporting, so ownership does not change when the
+display currency changes. Withdrawals reduce the associated person's capital;
+people with zero or negative net capital receive no share of the remaining
+portfolio. Bank and other non-person cash flows are combined as `Unassigned`
+so counterparty totals continue to reconcile with global portfolio and PnL.
+
+This attribution is a proportional accounting view, not asset-level ownership
+or a reconstruction of historical fund units. Names are grouped after trimming
+outer whitespace and ignoring case. The Dashboard, Investments page, and
+portfolio notifications show the resulting counterparty performance.
+
+Each portfolio notification has its own EUR/USD message currency. Automatic
+runs, manual runs, and previews use that saved currency and are not affected by
+the currency currently selected in the application header. Existing and new
+notifications default to EUR.
 
 Main endpoints:
 

@@ -1,6 +1,6 @@
 import React from 'react'
 import SyncRoundedIcon from '@mui/icons-material/SyncRounded'
-import { Alert, Box, Button, Card, CardContent, Checkbox, Chip, CircularProgress, FormControl, FormControlLabel, Grid, InputLabel, ListItemText, MenuItem, Select, Stack, Typography } from '@mui/material'
+import { Alert, Box, Button, Card, CardContent, Checkbox, Chip, CircularProgress, FormControl, FormControlLabel, Grid, InputLabel, ListItemText, MenuItem, Select, Stack, Table, TableBody, TableCell, TableHead, TableRow, Typography } from '@mui/material'
 import {
   fetchAssetIcons,
   fetchAssets,
@@ -1049,6 +1049,60 @@ export default function Dashboard({
               Manage Investments
             </Button>
           </Stack>
+          {performanceSelected?.pnl != null && (portfolioPerformance?.allocations || []).length > 0 ? (
+            <Box sx={{ overflowX: 'auto', mt: 2 }}>
+              <Typography variant="subtitle2" sx={{ mb: 0.5 }}>Performance by Counterparty</Typography>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Name</TableCell>
+                    <TableCell align="right">Net invested</TableCell>
+                    <TableCell align="right">Share</TableCell>
+                    <TableCell align="right">Current value</TableCell>
+                    <TableCell align="right">PnL</TableCell>
+                    <TableCell align="right">PnL %</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {(portfolioPerformance?.allocations || []).map((party) => {
+                    const values = currencyMode === 'EUR' ? party.eur : party.usd
+                    const pnlColor = values.status === 'gain'
+                      ? 'success.main'
+                      : values.status === 'loss'
+                        ? 'error.main'
+                        : 'text.primary'
+                    return (
+                      <TableRow key={`${party.counterparty_type}:${party.counterparty_name}`}>
+                        <TableCell>
+                          <Stack direction="row" spacing={0.75} alignItems="center">
+                            <span>{party.counterparty_name}</span>
+                            {party.pending.count > 0 ? <Chip size="small" color="warning" label="pending" /> : null}
+                          </Stack>
+                        </TableCell>
+                        <TableCell align="right">
+                          {formatCurrencyWithSymbol(Number(values.net_invested), currencyMode)}
+                        </TableCell>
+                        <TableCell align="right">
+                          {party.allocation_pct == null ? 'n/a' : `${Number(party.allocation_pct).toFixed(2)}%`}
+                        </TableCell>
+                        <TableCell align="right">
+                          {values.current_portfolio == null
+                            ? 'n/a'
+                            : formatCurrencyWithSymbol(Number(values.current_portfolio), currencyMode)}
+                        </TableCell>
+                        <TableCell align="right" sx={{ color: pnlColor, fontWeight: 700 }}>
+                          {values.pnl == null ? 'n/a' : formatCurrencyWithSymbol(Number(values.pnl), currencyMode)}
+                        </TableCell>
+                        <TableCell align="right" sx={{ color: pnlColor }}>
+                          {values.pnl_pct == null ? 'n/a' : `${Number(values.pnl_pct).toFixed(2)}%`}
+                        </TableCell>
+                      </TableRow>
+                    )
+                  })}
+                </TableBody>
+              </Table>
+            </Box>
+          ) : null}
         </CardContent>
       </Card>
 

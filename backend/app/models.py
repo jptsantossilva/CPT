@@ -148,6 +148,7 @@ class NotificationConfig(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str
     channel: str  # email|telegram
+    currency: str = "EUR"  # EUR|USD; independent from the UI display currency
     enabled: bool = True
     schedule_mode: str = "inherit"  # inherit|custom
     interval_value: int = 1

@@ -49,6 +49,7 @@ type PreviewContent = { text: string; html: string }
 type NotificationForm = {
   name: string
   channel: NotificationChannel
+  currency: 'EUR' | 'USD'
   enabled: boolean
   schedule_mode: 'inherit' | 'custom'
   interval_value: number
@@ -83,6 +84,7 @@ function defaultForm(): NotificationForm {
   return {
     name: '',
     channel: 'email',
+    currency: 'EUR',
     enabled: true,
     schedule_mode: 'inherit',
     interval_value: 1,
@@ -132,6 +134,7 @@ export default function NotificationsSection() {
     return {
       name: form.name,
       channel: form.channel,
+      currency: form.currency,
       enabled: form.enabled,
       schedule_mode: form.schedule_mode,
       interval_value: Number(form.interval_value || 1),
@@ -184,6 +187,7 @@ export default function NotificationsSection() {
     setEditForm({
       name: row.name,
       channel: row.channel,
+      currency: row.currency || 'EUR',
       enabled: row.enabled,
       schedule_mode: row.schedule_mode,
       interval_value: row.interval_value,
@@ -496,6 +500,21 @@ export default function NotificationsSection() {
                 <MenuItem value="disabled">Disabled</MenuItem>
               </TextField>
             </Grid>
+            <Grid item xs={12} md={2}>
+              <TextField
+                label="Message Currency"
+                size="small"
+                fullWidth
+                select
+                value={createForm.currency}
+                onChange={(e) =>
+                  setCreateForm((prev) => ({ ...prev, currency: String(e.target.value || 'EUR') as 'EUR' | 'USD' }))
+                }
+              >
+                <MenuItem value="EUR">EUR</MenuItem>
+                <MenuItem value="USD">USD</MenuItem>
+              </TextField>
+            </Grid>
 
             {renderScheduleFields(createForm, setCreateForm)}
 
@@ -600,6 +619,7 @@ export default function NotificationsSection() {
                           size="small"
                           label={`Schedule: ${row.schedule_mode === 'inherit' ? 'Automatic Sync Schedule' : 'Custom'}`}
                         />
+                        <Chip size="small" label={`Currency: ${row.currency || 'EUR'}`} />
                         <Chip size="small" label={`Due: ${row.is_due ? 'yes' : 'no'}`} />
                       </Stack>
                     </>
@@ -638,6 +658,21 @@ export default function NotificationsSection() {
                         >
                           <MenuItem value="enabled">Enabled</MenuItem>
                           <MenuItem value="disabled">Disabled</MenuItem>
+                        </TextField>
+                      </Grid>
+                      <Grid item xs={12} md={2}>
+                        <TextField
+                          label="Message Currency"
+                          size="small"
+                          fullWidth
+                          select
+                          value={editForm.currency}
+                          onChange={(e) =>
+                            setEditForm((prev) => ({ ...prev, currency: String(e.target.value || 'EUR') as 'EUR' | 'USD' }))
+                          }
+                        >
+                          <MenuItem value="EUR">EUR</MenuItem>
+                          <MenuItem value="USD">USD</MenuItem>
                         </TextField>
                       </Grid>
 

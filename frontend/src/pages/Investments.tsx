@@ -461,12 +461,13 @@ export default function Investments({ currencyMode }: { currencyMode: CurrencyMo
         </CardContent>
       </Card>
 
-      {performance && performance.by_counterparty.length > 0 ? (
+      {performance && (performance.allocations || []).length > 0 ? (
         <Card variant="outlined">
           <CardContent>
-            <Typography variant="h6">Cash Flows by Counterparty</Typography>
+            <Typography variant="h6">Performance by Counterparty</Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-              These are cash-flow totals only; they do not allocate portfolio value or PnL to a bank or person.
+              Current portfolio value is allocated using each person&apos;s positive net EUR capital. Banks and other
+              non-person cash flows are grouped as Unassigned.
             </Typography>
             <Box sx={{ overflowX: 'auto' }}>
               <Table size="small">
@@ -476,19 +477,45 @@ export default function Investments({ currencyMode }: { currencyMode: CurrencyMo
                     <TableCell>Type</TableCell>
                     <TableCell align="right">Added</TableCell>
                     <TableCell align="right">Withdrawn</TableCell>
-                    <TableCell align="right">Net</TableCell>
+                    <TableCell align="right">Net invested</TableCell>
+                    <TableCell align="right">Share</TableCell>
+                    <TableCell align="right">Current value</TableCell>
+                    <TableCell align="right">PnL</TableCell>
+                    <TableCell align="right">PnL %</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {performance.by_counterparty.map((party) => {
+                  {(performance.allocations || []).map((party) => {
                     const values = currencyMode === 'EUR' ? party.eur : party.usd
+                    const pnlColor = values.status === 'gain'
+                      ? 'success.main'
+                      : values.status === 'loss'
+                        ? 'error.main'
+                        : 'text.primary'
                     return (
                       <TableRow key={`${party.counterparty_type}:${party.counterparty_name}`}>
-                        <TableCell>{party.counterparty_name}</TableCell>
+                        <TableCell>
+                          <Stack direction="row" spacing={0.75} alignItems="center">
+                            <span>{party.counterparty_name}</span>
+                            {party.pending.count > 0 ? (
+                              <Chip size="small" color="warning" label={`${party.pending.count} pending`} />
+                            ) : null}
+                          </Stack>
+                        </TableCell>
                         <TableCell>{party.counterparty_type}</TableCell>
                         <TableCell align="right">{formatMoney(values.deposits, currencyMode)}</TableCell>
                         <TableCell align="right">{formatMoney(values.withdrawals, currencyMode)}</TableCell>
                         <TableCell align="right">{formatMoney(values.net_invested, currencyMode)}</TableCell>
+                        <TableCell align="right">
+                          {party.allocation_pct == null ? 'n/a' : `${Number(party.allocation_pct).toFixed(2)}%`}
+                        </TableCell>
+                        <TableCell align="right">{formatMoney(values.current_portfolio, currencyMode)}</TableCell>
+                        <TableCell align="right" sx={{ color: pnlColor, fontWeight: 700 }}>
+                          {formatMoney(values.pnl, currencyMode)}
+                        </TableCell>
+                        <TableCell align="right" sx={{ color: pnlColor }}>
+                          {values.pnl_pct == null ? 'n/a' : `${Number(values.pnl_pct).toFixed(2)}%`}
+                        </TableCell>
                       </TableRow>
                     )
                   })}
@@ -500,7 +527,7 @@ export default function Investments({ currencyMode }: { currencyMode: CurrencyMo
       ) : null}
 
       <Alert severity="info">
-        Global PnL equals current portfolio + FIAT withdrawn − FIAT added. Once withdrawals exist, realized and unrealized PnL cannot be separated without the cost basis of the assets sold.
+        Global PnL equals current portfolio + FIAT withdrawn − FIAT added. Counterparty PnL uses a proportional EUR-capital allocation and is not an asset-level ownership record. Once withdrawals exist, realized and unrealized PnL cannot be separated without the cost basis of the assets sold.
       </Alert>
     </Stack>
   )

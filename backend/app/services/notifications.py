@@ -125,6 +125,21 @@ def _normalize_channel(value: str) -> str:
     return channel
 
 
+def _normalize_config_currency(value: Any) -> str:
+    currency = str(value or "").strip().upper()
+    if currency not in _ALLOWED_CURRENCIES:
+        raise ValueError("currency must be one of: EUR, USD")
+    return currency
+
+
+def _config_currency(config: NotificationConfig) -> str:
+    """Read a persisted currency defensively; legacy/corrupt rows use EUR."""
+    try:
+        return _normalize_config_currency(getattr(config, "currency", "EUR") or "EUR")
+    except ValueError:
+        return "EUR"
+
+
 def _resolve_schedule(config: NotificationConfig) -> dict[str, Any]:
     if config.schedule_mode == "inherit":
         inherited = scheduler.get_schedule()
@@ -359,19 +374,32 @@ def _load_latest_sync_pair() -> tuple[Snapshot | None, Snapshot | None]:
     return current, previous
 
 
-def _global_pnl_for_snapshot(
-    snapshot: Snapshot | None,
-    currency: str,
-) -> tuple[float | None, float | None, str]:
-    """Calculate PnL against the exact snapshot used for the notification."""
+def _performance_for_snapshot(snapshot: Snapshot | None) -> dict[str, Any] | None:
+    """Build performance against the exact snapshot used for a notification."""
     if snapshot is None:
-        return None, None, "unavailable"
+        return None
     try:
         with db.get_session() as s:
             cashflows = s.exec(
                 select(FiatCashFlow).order_by(FiatCashFlow.occurred_on.asc(), FiatCashFlow.id.asc())
             ).all()
-        performance = fiat.build_performance(snapshot, cashflows)
+        return fiat.build_performance(snapshot, cashflows)
+    except Exception:
+        # Notification delivery must remain available if a legacy database has
+        # not yet created the FIAT cash-flow table or its data is unavailable.
+        log.exception("failed to calculate portfolio performance for notification")
+        return None
+
+
+def _global_pnl_for_snapshot(
+    snapshot: Snapshot | None,
+    currency: str,
+) -> tuple[float | None, float | None, str]:
+    """Calculate PnL against the exact snapshot used for the notification."""
+    performance = _performance_for_snapshot(snapshot)
+    if performance is None:
+        return None, None, "unavailable"
+    try:
         selected = performance["usd" if str(currency or "").upper() == "USD" else "eur"]
         raw_pnl = selected.get("pnl")
         raw_pnl_pct = selected.get("pnl_pct")
@@ -383,10 +411,42 @@ def _global_pnl_for_snapshot(
             str(selected.get("status") or "unavailable"),
         )
     except Exception:
-        # Notification delivery must remain available if a legacy database has
-        # not yet created the FIAT cash-flow table or its data is unavailable.
         log.exception("failed to calculate global PnL for notification")
         return None, None, "unavailable"
+
+
+def _selected_notification_performance(
+    performance: dict[str, Any] | None,
+    currency: str,
+) -> tuple[float | None, float | None, str, list[dict[str, Any]], int]:
+    if performance is None:
+        return None, None, "unavailable", [], 0
+    key = "usd" if str(currency or "").upper() == "USD" else "eur"
+    selected = performance.get(key) or {}
+    raw_pnl = selected.get("pnl")
+    allocations: list[dict[str, Any]] = []
+    for party in performance.get("allocations") or []:
+        values = party.get(key) or {}
+        allocations.append(
+            {
+                "counterparty_type": party.get("counterparty_type"),
+                "counterparty_name": party.get("counterparty_name"),
+                "allocation_pct": party.get("allocation_pct"),
+                "net_invested": values.get("net_invested"),
+                "current_portfolio": values.get("current_portfolio"),
+                "pnl": values.get("pnl"),
+                "pnl_pct": values.get("pnl_pct"),
+                "status": values.get("status"),
+                "pending_count": int((party.get("pending") or {}).get("count") or 0),
+            }
+        )
+    return (
+        float(raw_pnl) if raw_pnl is not None else None,
+        float(selected["pnl_pct"]) if selected.get("pnl_pct") is not None else None,
+        str(selected.get("status") or "unavailable"),
+        allocations,
+        int((performance.get("pending") or {}).get("count") or 0),
+    )
 
 
 def _load_base_snapshot(notification_id: int) -> tuple[NotificationSnapshot | None, dict[str, dict[str, Any]]]:
@@ -573,6 +633,8 @@ def _render_message(
     global_pnl: float | None = None,
     global_pnl_pct: float | None = None,
     global_pnl_status: str = "unavailable",
+    counterparty_allocations: list[dict[str, Any]] | None = None,
+    pending_cashflow_count: int = 0,
     comparison_note: str | None = None,
 ) -> tuple[str, str, str]:
     curr = "USD" if str(currency or "").upper() == "USD" else "EUR"
@@ -589,6 +651,14 @@ def _render_message(
         delta_abs = current_total - base
         if base > 0:
             delta_pct = (delta_abs / base) * 100.0
+
+    def _plain_amount(raw: Any, *, signed: bool = False) -> str:
+        if raw is None:
+            return "n/a"
+        value = float(raw)
+        if signed:
+            return f"{'+' if value >= 0 else '-'}{curr_symbol}{abs(value):,.2f}"
+        return f"{'-' if value < 0 else ''}{curr_symbol}{abs(value):,.2f}"
 
     lines = [
         "Portfolio Update",
@@ -614,9 +684,31 @@ def _render_message(
             if global_pnl is not None
             else "Global PnL: n/a (record FIAT cash flows to establish invested capital)"
         ),
-        "",
-        "Top 5 up",
     ]
+    allocations = counterparty_allocations or []
+    if allocations:
+        lines.extend(["", "Performance by Counterparty"])
+        for party in allocations:
+            share = (
+                f"{float(party['allocation_pct']):.2f}%"
+                if party.get("allocation_pct") is not None
+                else "n/a"
+            )
+            pnl_pct = (
+                f"{float(party['pnl_pct']):+.2f}%"
+                if party.get("pnl_pct") is not None
+                else "n/a"
+            )
+            pending = f" · {int(party.get('pending_count') or 0)} pending" if party.get("pending_count") else ""
+            lines.append(
+                f"- {party.get('counterparty_name') or 'Unassigned'}: "
+                f"Net {_plain_amount(party.get('net_invested'))} · Share {share} · "
+                f"Current {_plain_amount(party.get('current_portfolio'))} · "
+                f"PnL {_plain_amount(party.get('pnl'), signed=True)} ({pnl_pct}){pending}"
+            )
+    if pending_cashflow_count > 0:
+        lines.extend(["", f"Pending cash flows excluded: {pending_cashflow_count}"])
+    lines.extend(["", "Top 5 up"])
     if not top_up:
         lines.append("- none")
     for idx, item in enumerate(top_up, start=1):
@@ -644,6 +736,13 @@ def _render_message(
             f"<span style=\"color:{_color_for(value)};font-weight:600;font-size:15px;line-height:1.1;\">"
             f"{sign}{curr_symbol}{abs_value:,.2f}</span>"
         )
+
+    def _fmt_html_amount(raw: Any) -> str:
+        if raw is None:
+            return "<span style=\"opacity:.72;\">n/a</span>"
+        value = float(raw)
+        sign = "-" if value < 0 else ""
+        return f"{sign}{curr_symbol}{abs(value):,.2f}"
 
     if delta_abs is None:
         variation_html = f"Change: n/a ({escape(comparison_note or 'need at least 2 sync snapshots')})"
@@ -699,6 +798,55 @@ def _render_message(
         if global_pnl is not None
         else pnl_html
     )
+    def _counterparty_row_html(party: dict[str, Any]) -> str:
+        share = (
+            f"{float(party['allocation_pct']):.2f}%"
+            if party.get("allocation_pct") is not None
+            else "n/a"
+        )
+        party_pnl = (
+            _fmt_colored_amount(float(party["pnl"]))
+            if party.get("pnl") is not None
+            else "n/a"
+        )
+        party_pnl_pct = (
+            _fmt_colored_pct(float(party["pnl_pct"]))
+            if party.get("pnl_pct") is not None
+            else "n/a"
+        )
+        return (
+            "<tr>"
+            f"<td style=\"padding:6px 10px 6px 0;border-bottom:1px solid #e5e7eb;\">{escape(str(party.get('counterparty_name') or 'Unassigned'))}</td>"
+            f"<td style=\"padding:6px 10px;text-align:right;border-bottom:1px solid #e5e7eb;white-space:nowrap;\">{_fmt_html_amount(party.get('net_invested'))}</td>"
+            f"<td style=\"padding:6px 10px;text-align:right;border-bottom:1px solid #e5e7eb;white-space:nowrap;\">{share}</td>"
+            f"<td style=\"padding:6px 10px;text-align:right;border-bottom:1px solid #e5e7eb;white-space:nowrap;\">{_fmt_html_amount(party.get('current_portfolio'))}</td>"
+            f"<td style=\"padding:6px 10px;text-align:right;border-bottom:1px solid #e5e7eb;white-space:nowrap;\">{party_pnl}</td>"
+            f"<td style=\"padding:6px 0 6px 10px;text-align:right;border-bottom:1px solid #e5e7eb;white-space:nowrap;\">{party_pnl_pct}</td>"
+            "</tr>"
+        )
+
+    counterparty_rows_html = "".join(_counterparty_row_html(party) for party in allocations)
+    counterparty_html = (
+        "<p style=\"margin:0 0 6px 0;font-size:15px;\"><strong>Performance by Counterparty</strong></p>"
+        "<div style=\"overflow-x:auto;margin:0 0 14px 0;\">"
+        "<table role=\"presentation\" cellspacing=\"0\" cellpadding=\"0\" style=\"border-collapse:collapse;font-size:13px;\">"
+        "<thead><tr>"
+        "<th style=\"padding:4px 10px 4px 0;text-align:left;\">Name</th>"
+        "<th style=\"padding:4px 10px;text-align:right;\">Net</th>"
+        "<th style=\"padding:4px 10px;text-align:right;\">Share</th>"
+        "<th style=\"padding:4px 10px;text-align:right;\">Current</th>"
+        "<th style=\"padding:4px 10px;text-align:right;\">PnL</th>"
+        "<th style=\"padding:4px 0 4px 10px;text-align:right;\">PnL %</th>"
+        "</tr></thead>"
+        f"<tbody>{counterparty_rows_html}</tbody></table></div>"
+        if allocations
+        else ""
+    )
+    pending_html = (
+        f"<p style=\"margin:0 0 14px 0;color:#92400e;font-size:12px;\">Pending cash flows excluded: {pending_cashflow_count}</p>"
+        if pending_cashflow_count > 0
+        else ""
+    )
 
     body_html = (
         "<div style=\"font-family:Arial,sans-serif;line-height:1.5;color:#111;\">"
@@ -724,6 +872,8 @@ def _render_message(
         f"{comparison_note_html}"
         "<p style=\"margin:0 0 14px 0;font-size:15px;\"><strong>Global PnL:</strong> "
         f"{pnl_display_html}</p>"
+        f"{counterparty_html}"
+        f"{pending_html}"
         "<p style=\"margin:0 0 6px 0;font-size:15px;\"><strong>Top 5 up</strong></p>"
         f"<ol style=\"margin:0 0 12px 20px;padding:0;\">{top_up_html}</ol>"
         "<p style=\"margin:2px 0 6px 0;font-size:15px;\"><strong>Top 5 down</strong></p>"
@@ -920,12 +1070,14 @@ def _should_run_now(config: NotificationConfig, now: datetime) -> tuple[bool, da
 def execute_notification(notification_id: int, reason: str = "scheduled") -> dict[str, Any]:
     now = _utc_now()
     channel = ""
+    selected_currency = "EUR"
     recipient_rows: list[dict[str, Any]] = []
     with db.get_session() as s:
         config = s.get(NotificationConfig, notification_id)
         if not config:
             raise KeyError("notification not found")
         channel = str(config.channel or "").strip().lower()
+        selected_currency = _config_currency(config)
 
         recipients = s.exec(
             select(NotificationRecipient).where(NotificationRecipient.notification_id == notification_id)
@@ -954,9 +1106,15 @@ def execute_notification(notification_id: int, reason: str = "scheduled") -> dic
         s.refresh(run)
         run_id = int(run.id)
 
-    selected_currency = get_notification_currency()
     current_sync_snapshot, previous_sync_snapshot = _load_latest_sync_pair()
-    global_pnl, global_pnl_pct, global_pnl_status = _global_pnl_for_snapshot(current_sync_snapshot, selected_currency)
+    performance = _performance_for_snapshot(current_sync_snapshot)
+    (
+        global_pnl,
+        global_pnl_pct,
+        global_pnl_status,
+        counterparty_allocations,
+        pending_cashflow_count,
+    ) = _selected_notification_performance(performance, selected_currency)
     current_totals, current_assets = _extract_sync_snapshot_data(current_sync_snapshot)
     previous_totals, previous_assets = _extract_sync_snapshot_data(previous_sync_snapshot)
     comparison_note = _price_comparison_issue(
@@ -987,6 +1145,8 @@ def execute_notification(notification_id: int, reason: str = "scheduled") -> dic
         global_pnl=global_pnl,
         global_pnl_pct=global_pnl_pct,
         global_pnl_status=global_pnl_status,
+        counterparty_allocations=counterparty_allocations,
+        pending_cashflow_count=pending_cashflow_count,
         comparison_note=comparison_note,
     )
 
@@ -1014,8 +1174,10 @@ def execute_notification(notification_id: int, reason: str = "scheduled") -> dic
             "global_pnl": global_pnl,
             "global_pnl_pct": global_pnl_pct,
             "global_pnl_status": global_pnl_status,
+            "pending_cashflow_count": pending_cashflow_count,
             "comparison_note": comparison_note,
         },
+        "counterparty_allocations": counterparty_allocations,
         "sync_snapshots": {
             "current_sync_snapshot_id": int(current_sync_snapshot.id) if current_sync_snapshot and current_sync_snapshot.id is not None else None,
             "previous_sync_snapshot_id": int(previous_sync_snapshot.id) if previous_sync_snapshot and previous_sync_snapshot.id is not None else None,
@@ -1083,6 +1245,7 @@ def list_configs() -> list[dict[str, Any]]:
                 "id": int(row.id) if row.id is not None else None,
                 "name": row.name,
                 "channel": row.channel,
+                "currency": _config_currency(row),
                 "enabled": bool(row.enabled),
                 "schedule_mode": row.schedule_mode,
                 "interval_value": int(row.interval_value),
@@ -1113,6 +1276,7 @@ def create_config(payload: dict[str, Any]) -> dict[str, Any]:
     if not name:
         raise ValueError("name is required")
     channel = _normalize_channel(str(payload.get("channel") or ""))
+    currency = _normalize_config_currency(payload.get("currency") or "EUR")
     schedule = _normalize_schedule_payload(payload)
 
     now = _utc_now()
@@ -1120,6 +1284,7 @@ def create_config(payload: dict[str, Any]) -> dict[str, Any]:
         row = NotificationConfig(
             name=name,
             channel=channel,
+            currency=currency,
             enabled=bool(payload.get("enabled", True)),
             schedule_mode=str(schedule["schedule_mode"]),
             interval_value=int(schedule["interval_value"]),
@@ -1150,6 +1315,9 @@ def update_config(notification_id: int, payload: dict[str, Any]) -> dict[str, An
 
         if "channel" in payload:
             row.channel = _normalize_channel(str(payload.get("channel") or ""))
+
+        if "currency" in payload:
+            row.currency = _normalize_config_currency(payload.get("currency"))
 
         if "enabled" in payload:
             row.enabled = bool(payload.get("enabled"))
@@ -1262,9 +1430,16 @@ def preview(notification_id: int) -> dict[str, Any]:
         cfg = s.get(NotificationConfig, notification_id)
         if not cfg:
             raise KeyError("notification not found")
-    selected_currency = get_notification_currency()
+        selected_currency = _config_currency(cfg)
     current_sync_snapshot, previous_sync_snapshot = _load_latest_sync_pair()
-    global_pnl, global_pnl_pct, global_pnl_status = _global_pnl_for_snapshot(current_sync_snapshot, selected_currency)
+    performance = _performance_for_snapshot(current_sync_snapshot)
+    (
+        global_pnl,
+        global_pnl_pct,
+        global_pnl_status,
+        counterparty_allocations,
+        pending_cashflow_count,
+    ) = _selected_notification_performance(performance, selected_currency)
     current_totals, current_assets = _extract_sync_snapshot_data(current_sync_snapshot)
     previous_totals, previous_assets = _extract_sync_snapshot_data(previous_sync_snapshot)
     comparison_note = _price_comparison_issue(
@@ -1295,6 +1470,8 @@ def preview(notification_id: int) -> dict[str, Any]:
         global_pnl=global_pnl,
         global_pnl_pct=global_pnl_pct,
         global_pnl_status=global_pnl_status,
+        counterparty_allocations=counterparty_allocations,
+        pending_cashflow_count=pending_cashflow_count,
         comparison_note=comparison_note,
     )
     return {
@@ -1311,6 +1488,8 @@ def preview(notification_id: int) -> dict[str, Any]:
         "global_pnl": global_pnl,
         "global_pnl_pct": global_pnl_pct,
         "global_pnl_status": global_pnl_status,
+        "counterparty_allocations": counterparty_allocations,
+        "pending_cashflow_count": pending_cashflow_count,
         "comparison_note": comparison_note,
         "current_sync_snapshot_id": int(current_sync_snapshot.id) if current_sync_snapshot and current_sync_snapshot.id is not None else None,
         "previous_sync_snapshot_id": int(previous_sync_snapshot.id) if previous_sync_snapshot and previous_sync_snapshot.id is not None else None,

@@ -60,6 +60,8 @@ def _currency_summary(
     sums: dict[str, Decimal],
     currency: str,
     current: Decimal | None,
+    *,
+    require_deposit: bool = True,
 ) -> dict[str, str | None]:
     key = currency.lower()
     deposits = sums[f"deposits_{key}"]
@@ -69,7 +71,7 @@ def _currency_summary(
     # baseline, even when a current snapshot exists.
     pnl = (
         current + withdrawals - deposits
-        if current is not None and deposits > 0
+        if current is not None and (deposits > 0 or not require_deposit)
         else None
     )
     # This is the return relative to capital that remains invested. It is not
@@ -94,6 +96,75 @@ def _currency_summary(
     }
 
 
+def _person_key(name: Any) -> str:
+    return str(name or "").strip().casefold()
+
+
+def _new_allocation_group(counterparty_type: str, counterparty_name: str) -> dict[str, Any]:
+    return {
+        "counterparty_type": counterparty_type,
+        "counterparty_name": counterparty_name,
+        "included": _empty_sums(),
+        "pending": _empty_sums(),
+        "pending_count": 0,
+        "last_order": None,
+        "allocation_pct": None,
+        "current_eur": None,
+        "current_usd": None,
+    }
+
+
+def _positive_net_eur(group: dict[str, Any]) -> Decimal:
+    sums = group["included"]
+    return max(sums["deposits_eur"] - sums["withdrawals_eur"], Decimal("0.00"))
+
+
+def _allocate_current(
+    groups: dict[tuple[str, str], dict[str, Any]],
+    current_eur: Decimal | None,
+    current_usd: Decimal | None,
+) -> None:
+    """Allocate the snapshot using stable EUR capital weights.
+
+    Rounded allocations are reconciled back to the snapshot total by assigning
+    the cent residual to the group with the largest positive capital balance.
+    """
+    if current_eur is None or current_usd is None:
+        return
+
+    eligible = [group for group in groups.values() if _positive_net_eur(group) > 0]
+    total_weight = sum((_positive_net_eur(group) for group in eligible), Decimal("0.00"))
+    if total_weight <= 0:
+        for group in groups.values():
+            group["current_eur"] = Decimal("0.00")
+            group["current_usd"] = Decimal("0.00")
+            group["allocation_pct"] = Decimal("0.00")
+        fallback_key = ("unassigned", "unassigned")
+        fallback = groups.setdefault(fallback_key, _new_allocation_group("unassigned", "Unassigned"))
+        fallback["current_eur"] = current_eur
+        fallback["current_usd"] = current_usd
+        fallback["allocation_pct"] = None
+        return
+
+    largest = max(eligible, key=_positive_net_eur)
+    for group in groups.values():
+        group["current_eur"] = Decimal("0.00")
+        group["current_usd"] = Decimal("0.00")
+        group["allocation_pct"] = Decimal("0.00")
+        positive_net = _positive_net_eur(group)
+        if positive_net > 0:
+            group["allocation_pct"] = positive_net / total_weight * Decimal("100")
+
+    for currency, current in (("eur", current_eur), ("usd", current_usd)):
+        allocated = Decimal("0.00")
+        for group in eligible:
+            share = _positive_net_eur(group) / total_weight
+            amount = money(current * share)
+            group[f"current_{currency}"] = amount
+            allocated += amount
+        largest[f"current_{currency}"] += current - allocated
+
+
 def build_performance(snapshot: Any | None, cashflows: Iterable[Any]) -> dict[str, Any]:
     rows = list(cashflows)
     snapshot_date: date | None = None
@@ -108,8 +179,9 @@ def build_performance(snapshot: Any | None, cashflows: Iterable[Any]) -> dict[st
     pending_sums = _empty_sums()
     pending_count = 0
     counterparties: dict[tuple[str, str], dict[str, Any]] = {}
+    allocation_groups: dict[tuple[str, str], dict[str, Any]] = {}
 
-    for flow in rows:
+    for row_index, flow in enumerate(rows):
         is_pending = snapshot_date is None or flow.occurred_on > snapshot_date
         if is_pending:
             pending_count += 1
@@ -128,6 +200,28 @@ def build_performance(snapshot: Any | None, cashflows: Iterable[Any]) -> dict[st
         )
         _add_flow(group, flow)
 
+        if str(flow.counterparty_type or "").strip().lower() == "person":
+            normalized_name = _person_key(flow.counterparty_name)
+            allocation_key = ("person", normalized_name)
+            allocation_type = "person"
+            allocation_name = str(flow.counterparty_name or "").strip()
+        else:
+            allocation_key = ("unassigned", "unassigned")
+            allocation_type = "unassigned"
+            allocation_name = "Unassigned"
+        allocation = allocation_groups.setdefault(
+            allocation_key,
+            _new_allocation_group(allocation_type, allocation_name),
+        )
+        order = (flow.occurred_on, int(getattr(flow, "id", 0) or 0), row_index)
+        if allocation["last_order"] is None or order >= allocation["last_order"]:
+            allocation["counterparty_name"] = allocation_name
+            allocation["last_order"] = order
+        target = allocation["pending"] if is_pending else allocation["included"]
+        _add_flow(target, flow)
+        if is_pending:
+            allocation["pending_count"] += 1
+
     by_counterparty = []
     for group in sorted(
         counterparties.values(),
@@ -139,6 +233,38 @@ def build_performance(snapshot: Any | None, cashflows: Iterable[Any]) -> dict[st
                 "counterparty_name": group["counterparty_name"],
                 "eur": _currency_summary(group, "EUR", None),
                 "usd": _currency_summary(group, "USD", None),
+            }
+        )
+
+    _allocate_current(allocation_groups, current_eur, current_usd)
+    allocations = []
+    for group in sorted(
+        allocation_groups.values(),
+        key=lambda item: (
+            item["counterparty_type"] == "unassigned",
+            item["counterparty_name"].casefold(),
+        ),
+    ):
+        allocations.append(
+            {
+                "counterparty_type": group["counterparty_type"],
+                "counterparty_name": group["counterparty_name"],
+                "allocation_pct": (
+                    money_string(group["allocation_pct"])
+                    if group["allocation_pct"] is not None
+                    else None
+                ),
+                "eur": _currency_summary(
+                    group["included"], "EUR", group["current_eur"], require_deposit=False
+                ),
+                "usd": _currency_summary(
+                    group["included"], "USD", group["current_usd"], require_deposit=False
+                ),
+                "pending": {
+                    "count": group["pending_count"],
+                    "eur": _currency_summary(group["pending"], "EUR", None),
+                    "usd": _currency_summary(group["pending"], "USD", None),
+                },
             }
         )
 
@@ -159,4 +285,5 @@ def build_performance(snapshot: Any | None, cashflows: Iterable[Any]) -> dict[st
             "usd": _currency_summary(pending_sums, "USD", None),
         },
         "by_counterparty": by_counterparty,
+        "allocations": allocations,
     }
